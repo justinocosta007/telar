@@ -4,7 +4,7 @@ $src = $PSScriptRoot
 $root = Split-Path $src
 Add-Type -AssemblyName System.Drawing
 
-# ícone: quadrado verde-petróleo com uma TV e o sinal de "play"
+# ícone: quadrado laranja arredondado com um "T" branco inclinado (desenho próprio do TELAR)
 $size = 256
 $bmp = New-Object System.Drawing.Bitmap $size, $size
 $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -16,14 +16,18 @@ function RoundRect($x, $y, $w, $h, $r) {
   $p.AddArc($x + $w - $r, $y + $h - $r, $r, $r, 0, 90); $p.AddArc($x, $y + $h - $r, $r, $r, 90, 90)
   $p.CloseFigure(); return $p
 }
-$teal = [System.Drawing.Color]::FromArgb(14, 138, 118)
-$g.FillPath((New-Object System.Drawing.SolidBrush $teal), (RoundRect 8 8 240 240 80))
+$laranja = [System.Drawing.Color]::FromArgb(245, 124, 32)
+$g.FillPath((New-Object System.Drawing.SolidBrush $laranja), (RoundRect 8 8 240 240 72))
 $white = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
-$g.FillPath($white, (RoundRect 40 60 176 118 22))
-$g.FillPath((New-Object System.Drawing.SolidBrush $teal), (RoundRect 54 74 148 90 12))
-$g.FillRectangle($white, 116, 178, 24, 18)
-$g.FillPath($white, (RoundRect 80 192 96 16 12))
-$g.FillPolygon($white, [System.Drawing.Point[]]@((New-Object System.Drawing.Point 112, 94), (New-Object System.Drawing.Point 112, 144), (New-Object System.Drawing.Point 152, 119)))
+# "T" desenhado reto e depois inclinado para a direita
+$t = New-Object System.Drawing.Drawing2D.GraphicsPath
+$t.FillMode = 'Winding'   # a junção da barra com a haste fica cheia, sem emenda
+$t.AddPath((RoundRect 52 52 152 42 18), $false)
+$t.AddPath((RoundRect 106 60 46 146 18), $false)
+$m = New-Object System.Drawing.Drawing2D.Matrix
+$m.Shear(-0.18, 0); $m.Translate(22, 0, [System.Drawing.Drawing2D.MatrixOrder]::Append)
+$t.Transform($m)
+$g.FillPath($white, $t)
 $g.Dispose()
 $ms = New-Object System.IO.MemoryStream
 $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
