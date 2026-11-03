@@ -23,7 +23,7 @@ using System.Windows.Forms;
 
 static class App
 {
-    public const int Versao = 4;
+    public const int Versao = 5;
     public const string SiteUrl = "https://justinocosta007.github.io/telar/";
     public static readonly string Pasta = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TELAR");
     public static readonly string PastaPrograma = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "TELAR");
@@ -340,10 +340,11 @@ static class Tela
 static class Motor
 {
     public const string Usuario = "telar";
-    static string ArqSenha { get { return Path.Combine(App.Pasta, "motor.dat"); } }
+    // senha interna do motor: fica junto do motor (gravada só como administrador, lida pelo TELAR de qualquer usuário)
+    static string ArqSenha { get { return Path.Combine(App.MotorDir, "config", "telar.key"); } }
 
     public static bool Instalado { get { return File.Exists(App.MotorExe); } }
-    public static bool Configurado { get { return File.Exists(ArqSenha); } }
+    public static bool Configurado { get { return File.Exists(ArqSenha) || File.Exists(Path.Combine(App.Pasta, "motor.dat")); } }
     public static bool Ligado
     {
         get
@@ -354,7 +355,10 @@ static class Motor
     }
     public static string Senha()
     {
-        try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(ArqSenha), null, DataProtectionScope.CurrentUser)); }
+        try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(ArqSenha), null, DataProtectionScope.LocalMachine)); }
+        catch { }
+        // instalações até a v4 guardavam a senha na pasta do usuário
+        try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(Path.Combine(App.Pasta, "motor.dat")), null, DataProtectionScope.CurrentUser)); }
         catch { return ""; }
     }
 
@@ -381,6 +385,17 @@ static class Motor
     // roda como administrador (pelo instalador ou pelo botão Reparar):
     // ajusta o motor para a placa, cria a senha interna, o serviço, o firewall e o driver de controle
     public static int InstalarForte()
+    {
+        // duas execuções ao mesmo tempo (ex.: clique duplo em Reparar) gravariam senhas diferentes; uma espera a outra
+        using (var mx = new Mutex(false, @"Global\TELAR-Motor-Instalar"))
+        {
+            try { mx.WaitOne(TimeSpan.FromMinutes(10)); } catch (AbandonedMutexException) { }
+            try { return InstalarForteUmaVez(); }
+            finally { try { mx.ReleaseMutex(); } catch { } }
+        }
+    }
+
+    static int InstalarForteUmaVez()
     {
         var resumo = new List<string>();
         try
@@ -481,7 +496,9 @@ static class Motor
     static void GravarSenha(string senha)
     {
         Util.RodarCodigo(App.MotorExe, "--creds " + Usuario + " " + senha, 30000);
-        File.WriteAllBytes(ArqSenha, ProtectedData.Protect(Encoding.UTF8.GetBytes(senha), null, DataProtectionScope.CurrentUser));
+        File.WriteAllBytes(ArqSenha, ProtectedData.Protect(Encoding.UTF8.GetBytes(senha), null, DataProtectionScope.LocalMachine));
+        // a pasta config do motor só deixa administradores escreverem; libera leitura deste arquivo para os usuários
+        Util.RodarCodigo("icacls", "\"" + ArqSenha + "\" /grant *S-1-5-32-545:R", 10000);
     }
 
     // espera o motor responder e diz se aceitou a senha (OK) ou recusou (Unauthorized)
@@ -504,7 +521,7 @@ static class Motor
     static string Api(string metodo, string corpoJson)
     {
         var req = (HttpWebRequest)WebRequest.Create("https://127.0.0.1:47990/api/pin");
-        req.Method = metodo; req.Timeout = 15000;
+        req.Method = metodo; req.Timeout = 5000;
         req.Headers["Authorization"] = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(Usuario + ":" + Senha()));
         // o motor bloqueia pedidos sem origem conhecida (proteção CSRF)
         req.Headers["Origin"] = "https://localhost:47990"; req.Referer = "https://localhost:47990/pin";
@@ -516,6 +533,31 @@ static class Motor
         }
         using (var resp = (HttpWebResponse)req.GetResponse())
         using (var r = new StreamReader(resp.GetResponseStream())) return r.ReadToEnd();
+    }
+
+    // confirma os pedidos de conexão que estão esperando, com o código mostrado no PC Forte.
+    // null = nenhum pedido; "" = conectou; outro texto = motivo da falha
+    public static string ConfirmarPedidos(string codigo)
+    {
+        try
+        {
+            var pedidos = System.Text.RegularExpressions.Regex.Matches(Api("GET", null), "\"id\"\\s*:\\s*\"([^\"]+)\"");
+            if (pedidos.Count == 0) return null;
+            bool algum = false;
+            foreach (System.Text.RegularExpressions.Match m in pedidos)
+            {
+                string txt = Api("POST", "{\"pairing_id\":\"" + m.Groups[1].Value + "\",\"pin\":\"" + codigo + "\",\"name\":\"PC da TV\"}");
+                if (txt.Replace(" ", "").Contains("\"status\":true")) algum = true;
+            }
+            return algum ? "" : "Um PC da TV tentou conectar com o código errado. Confira o código e tente de novo.";
+        }
+        catch (WebException e)
+        {
+            var hr = e.Response as HttpWebResponse;
+            if (hr != null && hr.StatusCode == HttpStatusCode.Unauthorized) return "A senha interna do motor não bate. Clique em Reparar motor (lá embaixo).";
+            return null;
+        }
+        catch { return null; }
     }
 
     public static string LiberarPin(string pin, string nome)
@@ -651,8 +693,12 @@ class TelaForte : Janela
 {
     readonly Config cfg;
     readonly Label lMotor, lIpCasa, lIpFora, lPar;
-    readonly TextBox tPin, tNome, log;
-    readonly Button bPreparar, bLiberar;
+    readonly TextBox log;
+    readonly Button bPreparar, bNovo;
+    readonly Label lCodigo;
+    readonly System.Windows.Forms.Timer vigia = new System.Windows.Forms.Timer { Interval = 2000 };
+    string codigo = "";
+    bool motorOk, vigiando;
 
     public TelaForte(Config c) : base("TELAR · PC Forte", 520, 540)
     {
@@ -668,14 +714,16 @@ class TelaForte : Janela
         lIpFora = Rotulo("", 270, 180, 230, 12f, App.Texto, true);
         Rotulo("Digite esses IPs no TELAR do PC da TV.", 26, 214, 470, 9f, App.Apagado);
 
-        Rotulo("Liberar um PC da TV", 26, 246, 400, 12f, App.Texto, true);
-        Rotulo("PIN que aparece na TV", 26, 278, 200, 9f, App.Apagado);
-        Rotulo("Nome do aparelho", 250, 278, 200, 9f, App.Apagado);
-        tPin = Caixa("", 26, 300, 210); tPin.Font = new Font("Segoe UI Semibold", 14f); tPin.MaxLength = 4;
-        tNome = Caixa("PC da TV", 250, 300, 244); tNome.Font = new Font("Segoe UI", 14f);
-        bLiberar = Botao("Liberar", 26, 346, 468, App.Casa);
-        bLiberar.Click += delegate { Liberar(); };
+        Rotulo("Código para conectar um PC da TV", 26, 246, 468, 12f, App.Texto, true);
+        lCodigo = new Label { ForeColor = App.Texto, Font = new Font("Segoe UI Semibold", 38f), AutoSize = false, Bounds = new Rectangle(22, 274, 250, 76), TextAlign = ContentAlignment.MiddleLeft };
+        Controls.Add(lCodigo);
+        bNovo = Botao("Gerar outro código", 290, 292, 204, App.Cinza, 36);
+        bNovo.Font = new Font("Segoe UI", 9.5f);
+        bNovo.Click += delegate { NovoCodigo(); };
+        Rotulo("No PC da TV, abra o TELAR, clique neste PC e digite o código. Este PC confirma sozinho.", 26, 352, 468, 9f, App.Apagado).Height = 36;
         lPar = Rotulo("", 26, 392, 468, 9.5f, App.Apagado);
+        NovoCodigo();
+        vigia.Tick += delegate { Vigiar(); };
 
         log = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = App.Cartao, ForeColor = App.Apagado, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 9f), Bounds = new Rectangle(26, 420, 468, 60) };
         Controls.Add(log);
@@ -687,9 +735,9 @@ class TelaForte : Janela
         var dica = Rotulo("Só se o motor aparecer desligado ou o pareamento falhar. Pede permissão de administrador.", 176, 492, 320, 8.5f, App.Apagado);
         dica.Height = 36;
 
-        AcceptButton = bLiberar;
         PermitirMaximizar();
-        Shown += delegate { Atualizar(); };
+        Shown += delegate { Atualizar(); vigia.Start(); };
+        FormClosed += delegate { vigia.Stop(); };
     }
 
     void Log(string m) { log.AppendText(m + "\r\n"); Application.DoEvents(); }
@@ -702,7 +750,7 @@ class TelaForte : Janela
         bPreparar.Text = "Reparar motor";
         lIpCasa.Text = Util.IpLocal(); if (lIpCasa.Text == "") lIpCasa.Text = "sem rede";
         lIpFora.Text = Util.IpTailscale(); if (lIpFora.Text == "") lIpFora.Text = File.Exists(App.TailscaleExe) ? "entre no Tailscale" : "opcional: Tailscale";
-        bLiberar.Enabled = ok;
+        motorOk = ok;
     }
 
     void Preparar()
@@ -713,14 +761,32 @@ class TelaForte : Janela
         Atualizar();
     }
 
-    void Liberar()
+    void NovoCodigo()
     {
-        string pin = tPin.Text.Trim();
-        if (pin.Length != 4 || !pin.All(char.IsDigit)) { lPar.ForeColor = App.Ruim; lPar.Text = "O PIN tem 4 números. Copie o que aparece na TV."; return; }
-        lPar.ForeColor = App.Apagado; lPar.Text = "Liberando..."; Application.DoEvents();
-        string erro = Motor.LiberarPin(pin, tNome.Text.Trim() == "" ? "PC da TV" : tNome.Text.Trim());
-        lPar.ForeColor = erro == "" ? App.Ok : App.Ruim;
-        lPar.Text = erro == "" ? "Liberado. O PC da TV já pode jogar." : erro;
-        if (erro == "") tPin.Text = "";
+        using (var r = RandomNumberGenerator.Create())
+        {
+            var b = new byte[4]; r.GetBytes(b);
+            codigo = (BitConverter.ToUInt32(b, 0) % 9000 + 1000).ToString();
+        }
+        lCodigo.Text = codigo;
+    }
+
+    // a cada 2 s confere se algum PC da TV pediu para conectar e confirma com o código mostrado
+    void Vigiar()
+    {
+        if (!motorOk || vigiando) return;
+        vigiando = true;
+        string cod = codigo;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            string res = Motor.ConfirmarPedidos(cod);
+            BeginInvoke((Action)(() =>
+            {
+                vigiando = false;
+                if (res == null) return; // ninguém pediu
+                if (res == "") { lPar.ForeColor = App.Ok; lPar.Text = "PC da TV conectado às " + DateTime.Now.ToString("HH:mm") + ". Ele já pode jogar."; NovoCodigo(); }
+                else { lPar.ForeColor = App.Ruim; lPar.Text = res; }
+            }));
+        });
     }
 }
