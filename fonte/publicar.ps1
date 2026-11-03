@@ -21,7 +21,7 @@ if ($LASTEXITCODE -ne 0) { "Não clonou o repositório."; Stop-Transcript | Out-
 Copy-Item "$root\site\index.html", "$root\site\telar.exe", "$root\site\version.json", "$root\README.md", "$root\LICENSE" $clone -Force
 Copy-Item "$root\TELAR-Setup.exe" "$clone\telar-setup.exe" -Force
 New-Item -ItemType Directory -Force "$clone\fonte" | Out-Null
-foreach ($f in 'Telar.cs', 'TelaTV.cs', 'Setup.cs', 'build.ps1', 'setup.manifest', 'LICENCAS.txt', 'TELAR.ico', 'publicar.ps1') {
+foreach ($f in 'Telar.cs', 'Visual.cs', 'TelaTV.cs', 'Setup.cs', 'build.ps1', 'setup.manifest', 'LICENCAS.txt', 'TELAR.ico', 'publicar.ps1') {
   Copy-Item "$PSScriptRoot\$f" "$clone\fonte\$f" -Force
 }
 
@@ -40,7 +40,7 @@ if ($push -ne 0) { "O envio pelo Git falhou."; Stop-Transcript | Out-Null; exit 
 "Publicando o instalador na Release v$versao..."
 & $gh release view "v$versao" --repo $repo 2>$null | Out-Null
 if ($LASTEXITCODE -eq 0) {
-  & $gh release upload "v$versao" "$root\TELAR-Setup.exe" --repo $repo --clobber
+  "  a Release v$versao já existe (não reenvia o mesmo instalador)"
 } else {
   & $gh release create "v$versao" "$root\TELAR-Setup.exe" --repo $repo --title "TELAR v$versao" --notes "Instalador único do TELAR. Rode nos dois PCs: escolha PC Forte na sala e PC da TV na TV. Tudo vai dentro do instalador; não precisa instalar mais nada." --latest
 }

@@ -23,7 +23,7 @@ using System.Windows.Forms;
 
 static class App
 {
-    public const int Versao = 5;
+    public const int Versao = 6;
     public const string SiteUrl = "https://justinocosta007.github.io/telar/";
     public static readonly string Pasta = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TELAR");
     public static readonly string PastaPrograma = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "TELAR");
@@ -114,6 +114,11 @@ static class Instalacao
             k.SetValue("InstallLocation", App.PastaPrograma);
             k.SetValue("UninstallString", "\"" + exe + "\" --desinstalar");
             k.SetValue("NoModify", 1); k.SetValue("NoRepair", 1);
+            k.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
+            long bytes = 0;
+            foreach (var pasta in new[] { App.PastaPrograma, Path.Combine(App.ProgramFiles, "TELAR") })
+                if (Directory.Exists(pasta)) foreach (var f in Directory.GetFiles(pasta, "*", SearchOption.AllDirectories)) try { bytes += new FileInfo(f).Length; } catch { }
+            k.SetValue("EstimatedSize", (int)(bytes / 1024), Microsoft.Win32.RegistryValueKind.DWord);
         }
     }
 
@@ -518,9 +523,35 @@ static class Motor
     }
 
     // libera um PC da TV que está mostrando o PIN
-    static string Api(string metodo, string corpoJson)
+    static string Api(string metodo, string corpoJson) { return Api(metodo, corpoJson, "/api/pin"); }
+
+    // aparelhos (PCs da TV) que já conectaram: pares nome|uuid
+    public static List<string[]> ListarAparelhos()
     {
-        var req = (HttpWebRequest)WebRequest.Create("https://127.0.0.1:47990/api/pin");
+        var r = new List<string[]>();
+        try
+        {
+            string json = Api("GET", null, "/api/clients/list");
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(json, "\\{[^{}]*\\}"))
+            {
+                var n = System.Text.RegularExpressions.Regex.Match(m.Value, "\"name\"\\s*:\\s*\"([^\"]*)\"");
+                var u = System.Text.RegularExpressions.Regex.Match(m.Value, "\"uuid\"\\s*:\\s*\"([^\"]*)\"");
+                if (u.Success) r.Add(new[] { n.Success && n.Groups[1].Value != "" ? n.Groups[1].Value : "PC da TV", u.Groups[1].Value });
+            }
+        }
+        catch { }
+        return r;
+    }
+
+    public static bool Desconectar(string uuid)
+    {
+        try { return Api("POST", "{\"uuid\":\"" + uuid + "\"}", "/api/clients/unpair").Replace(" ", "").Contains("\"status\":true"); }
+        catch { return false; }
+    }
+
+    static string Api(string metodo, string corpoJson, string caminho)
+    {
+        var req = (HttpWebRequest)WebRequest.Create("https://127.0.0.1:47990" + caminho);
         req.Method = metodo; req.Timeout = 5000;
         req.Headers["Authorization"] = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(Usuario + ":" + Senha()));
         // o motor bloqueia pedidos sem origem conhecida (proteção CSRF)
@@ -688,77 +719,105 @@ static class EscolherPapel
     }
 }
 
-// ---------------- PC Forte ----------------
-class TelaForte : Janela
+// ---------------- PC Forte (estilo AnyDesk) ----------------
+// "Este dispositivo" mostra o código para conectar; o PC Forte confirma sozinho quem digitar o código certo.
+class TelaForte : Casca
 {
     readonly Config cfg;
-    readonly Label lMotor, lIpCasa, lIpFora, lPar;
-    readonly TextBox log;
-    readonly Button bPreparar, bNovo;
-    readonly Label lCodigo;
     readonly System.Windows.Forms.Timer vigia = new System.Windows.Forms.Timer { Interval = 2000 };
     string codigo = "";
-    bool motorOk, vigiando;
+    bool motorOk, vigiando, reparando;
+    List<string[]> aparelhos = new List<string[]>();
 
-    public TelaForte(Config c) : base("TELAR · PC Forte", 520, 540)
+    public TelaForte(Config c) : base("TELAR · PC Forte")
     {
         cfg = c;
-        Rotulo("TELAR", 24, 16, 300, 20f, App.Texto, true);
-        Rotulo("PC Forte · roda os jogos e transmite para a TV", 26, 62, 460, 9.5f, App.Apagado);
+        Heroi("Este dispositivo", "----");
+        BotaoHeroi("", "No PC da TV, clique neste PC e digite este código. Este PC confirma sozinho.");
+        BotaoHeroi("", "Gerar outro código").Click += delegate { NovoCodigo(); };
+        MarcadorEndereco("Este é o PC Forte. Para jogar, use o TELAR no PC da TV e digite o código acima.");
+        tEndereco.ReadOnly = true; bConectar.Enabled = false;
+        Aviso("No PC da TV, clique neste PC e digite o código acima. Este PC confirma sozinho.", Cores.Laranja);
 
-        Rotulo("Motor de transmissão", 26, 100, 220, 9f, App.Apagado);
-        lMotor = Rotulo("", 26, 120, 470, 11f, App.Texto, true);
-        Rotulo("IP em casa", 26, 160, 220, 9f, App.Apagado);
-        lIpCasa = Rotulo("", 26, 180, 220, 12f, App.Texto, true);
-        Rotulo("IP fora de casa (Tailscale)", 270, 160, 230, 9f, App.Apagado);
-        lIpFora = Rotulo("", 270, 180, 230, 12f, App.Texto, true);
-        Rotulo("Digite esses IPs no TELAR do PC da TV.", 26, 214, 470, 9f, App.Apagado);
+        AbaMudou += delegate { Redesenhar(); };
+        AbrirMenu += delegate { MostrarMenu(); };
+        DefinirAbas("Status", "Aparelhos conectados");
 
-        Rotulo("Código para conectar um PC da TV", 26, 246, 468, 12f, App.Texto, true);
-        lCodigo = new Label { ForeColor = App.Texto, Font = new Font("Segoe UI Semibold", 38f), AutoSize = false, Bounds = new Rectangle(22, 274, 250, 76), TextAlign = ContentAlignment.MiddleLeft };
-        Controls.Add(lCodigo);
-        bNovo = Botao("Gerar outro código", 290, 292, 204, App.Cinza, 36);
-        bNovo.Font = new Font("Segoe UI", 9.5f);
-        bNovo.Click += delegate { NovoCodigo(); };
-        Rotulo("No PC da TV, abra o TELAR, clique neste PC e digite o código. Este PC confirma sozinho.", 26, 352, 468, 9f, App.Apagado).Height = 36;
-        lPar = Rotulo("", 26, 392, 468, 9.5f, App.Apagado);
         NovoCodigo();
         vigia.Tick += delegate { Vigiar(); };
-
-        log = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = App.Cartao, ForeColor = App.Apagado, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 9f), Bounds = new Rectangle(26, 420, 468, 60) };
-        Controls.Add(log);
-
-        // só para quando algo der errado: refaz placa de vídeo, senha interna, firewall, serviço e driver de controle
-        bPreparar = Botao("Reparar motor", 26, 494, 140, App.Cinza, 30);
-        bPreparar.Font = new Font("Segoe UI", 9f);
-        bPreparar.Click += delegate { Preparar(); };
-        var dica = Rotulo("Só se o motor aparecer desligado ou o pareamento falhar. Pede permissão de administrador.", 176, 492, 320, 8.5f, App.Apagado);
-        dica.Height = 36;
-
-        PermitirMaximizar();
         Shown += delegate { Atualizar(); vigia.Start(); };
         FormClosed += delegate { vigia.Stop(); };
     }
 
-    void Log(string m) { log.AppendText(m + "\r\n"); Application.DoEvents(); }
+    void MostrarMenu()
+    {
+        var m = new ContextMenuStrip();
+        m.Items.Add("Gerar outro código", null, delegate { NovoCodigo(); });
+        m.Items.Add("Reparar motor (só se der problema)", null, delegate { Preparar(); });
+        m.Items.Add("Atualizar status", null, delegate { Atualizar(); });
+        m.Show(bMenu, new Point(bMenu.Width - m.Width, bMenu.Height));
+    }
 
     void Atualizar()
     {
-        bool ok = Motor.Instalado && Motor.Configurado && Motor.Ligado;
-        lMotor.Text = !Motor.Instalado ? "Não instalado · rode o TELAR-Setup.exe" : !Motor.Configurado ? "Instalado, falta configurar · clique em Reparar motor" : Motor.Ligado ? "Ligado e pronto" : "Desligado · clique em Reparar motor";
-        lMotor.ForeColor = ok ? App.Ok : App.Ruim;
-        bPreparar.Text = "Reparar motor";
-        lIpCasa.Text = Util.IpLocal(); if (lIpCasa.Text == "") lIpCasa.Text = "sem rede";
-        lIpFora.Text = Util.IpTailscale(); if (lIpFora.Text == "") lIpFora.Text = File.Exists(App.TailscaleExe) ? "entre no Tailscale" : "opcional: Tailscale";
-        motorOk = ok;
+        motorOk = Motor.Instalado && Motor.Configurado && Motor.Ligado;
+        Status(motorOk);
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            var lista = motorOk ? Motor.ListarAparelhos() : new List<string[]>();
+            BeginInvoke((Action)(() => { aparelhos = lista; Redesenhar(); }));
+        });
+        Redesenhar();
     }
+
+    void Redesenhar()
+    {
+        if (!cartoes.Visible) return;
+        cartoes.SuspendLayout();
+        cartoes.Controls.Clear();
+        if (abaAtual == 0)
+        {
+            string motor = !Motor.Instalado ? "Não instalado" : !Motor.Configurado ? "Falta configurar" : Motor.Ligado ? "Ligado e pronto" : "Desligado";
+            NovoCartao("Motor de transmissão", motor, motorOk ? "Tela, áudio e controles" : "Use Reparar motor", motorOk ? Cores.Verde : Cores.Vermelho,
+                motorOk ? Cartao.Desenho.Ok : Cartao.Desenho.Desligado).Click += delegate { Atualizar(); };
+            string ip = Util.IpLocal();
+            NovoCartao("Endereço em casa", ip == "" ? "sem rede" : ip, "O PC da TV acha sozinho", Cores.Cartoes[3], Cartao.Desenho.Rede);
+            string ts = Util.IpTailscale();
+            NovoCartao("Fora de casa", ts != "" ? ts : "opcional: Tailscale", "Acesso remoto para trabalho", Cores.Cartoes[4], Cartao.Desenho.Rede);
+            bool controle = Util.Rodar("sc", "query ViGEmBus", 5000).Contains("ViGEmBus");
+            NovoCartao("Controle", controle ? "Driver instalado" : "Driver ausente", "Xbox e PlayStation na TV", Cores.Cartoes[1], Cartao.Desenho.Controle);
+            NovoCartao("Aparelhos conectados", aparelhos.Count == 0 ? "nenhum ainda" : aparelhos.Count + (aparelhos.Count == 1 ? " PC da TV" : " PCs da TV"), "Ver ou desconectar", Cores.Cartoes[0], Cartao.Desenho.Pc)
+                .Click += delegate { EscolherAba(1); };
+            NovoCartao("Reparar motor", reparando ? "Reparando..." : "Só se der problema", "Pede administrador", Color.FromArgb(78, 78, 78), Cartao.Desenho.Engrenagem)
+                .Click += delegate { Preparar(); };
+        }
+        else
+        {
+            foreach (var a in aparelhos)
+            {
+                var ap = a;
+                NovoCartao(ap[0], "Conectado a este PC", "Clique para desconectar", Cores.DoNome(ap[1]), Cartao.Desenho.Pc).Click += delegate
+                {
+                    if (MessageBox.Show(this, "Desconectar \"" + ap[0] + "\"? Para voltar, ele vai precisar do código de novo.", "TELAR", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                    Aviso(Motor.Desconectar(ap[1]) ? "\"" + ap[0] + "\" foi desconectado." : "Não consegui desconectar. Tente Reparar motor.", Cores.Laranja);
+                    Atualizar();
+                };
+            }
+            if (aparelhos.Count == 0) TextoVazio("Nenhum PC da TV conectado ainda. No PC da TV, clique neste PC e digite o código lá de cima.");
+        }
+        cartoes.ResumeLayout();
+    }
+
+    void Log(string m) { Aviso(m.Trim(), Cores.Laranja); Application.DoEvents(); }
 
     void Preparar()
     {
-        bPreparar.Enabled = false;
+        if (reparando) return;
+        reparando = true; Redesenhar();
         Motor.Reparar(Log);
-        bPreparar.Enabled = true;
+        reparando = false;
         Atualizar();
+        Aviso(motorOk ? "Motor reparado e ligado." : "O motor não ligou. Rode o TELAR-Setup.exe de novo.", motorOk ? Cores.Verde : Cores.Vermelho);
     }
 
     void NovoCodigo()
@@ -768,7 +827,7 @@ class TelaForte : Janela
             var b = new byte[4]; r.GetBytes(b);
             codigo = (BitConverter.ToUInt32(b, 0) % 9000 + 1000).ToString();
         }
-        lCodigo.Text = codigo;
+        Heroi("Este dispositivo", codigo);
     }
 
     // a cada 2 s confere se algum PC da TV pediu para conectar e confirma com o código mostrado
@@ -784,8 +843,8 @@ class TelaForte : Janela
             {
                 vigiando = false;
                 if (res == null) return; // ninguém pediu
-                if (res == "") { lPar.ForeColor = App.Ok; lPar.Text = "PC da TV conectado às " + DateTime.Now.ToString("HH:mm") + ". Ele já pode jogar."; NovoCodigo(); }
-                else { lPar.ForeColor = App.Ruim; lPar.Text = res; }
+                if (res == "") { Aviso("PC da TV conectado às " + DateTime.Now.ToString("HH:mm") + ". Ele já pode jogar.", Cores.Verde); NovoCodigo(); Atualizar(); }
+                else Aviso(res, Cores.Vermelho);
             }));
         });
     }

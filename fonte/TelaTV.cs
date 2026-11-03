@@ -1,10 +1,9 @@
-﻿// TELAR - PC da TV. Mesma organização do receptor: tela "Computadores" (PCs achados, com cadeado até parear),
-// tela de apps do PC escolhido e tela "Configurações" com todas as opções de transmissão.
+﻿// TELAR - PC da TV, no estilo AnyDesk: barra para digitar o endereço do PC Forte, "Este dispositivo",
+// abas Encontrados / Sessões Recentes / Favoritos com os PCs Fortes em cartões, e as Configurações.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -14,148 +13,52 @@ using System.Windows.Forms;
 class PcInfo
 {
     public string Ip, Nome;
-    public bool Online, Pareado, Ocupado;
-}
-
-// ---------------- quadrado de PC / app ----------------
-class Bloco : Control
-{
-    public enum Icone { Pc, App, Steam }
-    public Icone Tipo = Icone.Pc;
-    public bool Cadeado, Desligado;
-    public string Aviso = "";
-    bool sobre;
-
-    public Bloco()
-    {
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
-        Size = new Size(230, 250); Margin = new Padding(8); Cursor = Cursors.Hand;
-        Font = new Font("Segoe UI", 20f); ForeColor = Color.White;
-    }
-    protected override void OnMouseEnter(EventArgs e) { sobre = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { sobre = false; Invalidate(); base.OnMouseLeave(e); }
-
-    static GraphicsPath Arred(RectangleF r, float raio)
-    {
-        var p = new GraphicsPath(); float d = raio * 2;
-        p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        p.CloseFigure(); return p;
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(sobre ? Color.FromArgb(84, 84, 84) : Color.FromArgb(64, 64, 64));
-        var cor = Desligado ? Color.FromArgb(140, 140, 140) : Color.White;
-        using (var br = new SolidBrush(cor))
-        using (var fundo = new SolidBrush(sobre ? Color.FromArgb(84, 84, 84) : Color.FromArgb(64, 64, 64)))
-        {
-            float cx = Width / 2f;
-            if (Tipo == Icone.Pc || Tipo == Icone.App)
-            {
-                // monitor
-                var tela = new RectangleF(cx - 72, 14, 144, 112);
-                using (var p = Arred(tela, 14)) g.FillPath(br, p);
-                using (var p = Arred(new RectangleF(tela.X + 12, tela.Y + 12, tela.Width - 24, tela.Height - 32), 4)) g.FillPath(fundo, p);
-                g.FillRectangle(br, cx - 12, tela.Bottom, 24, 14);
-                g.FillRectangle(br, cx - 26, tela.Bottom + 12, 52, 10);
-                float my = tela.Y + 12 + (tela.Height - 32) / 2f;
-                if (Tipo == Icone.Pc && Cadeado)
-                {
-                    // cadeado
-                    using (var pen = new Pen(cor, 6)) g.DrawArc(pen, cx - 11, my - 24, 22, 26, 180, 180);
-                    using (var p = Arred(new RectangleF(cx - 18, my - 11, 36, 30), 5)) g.FillPath(br, p);
-                    g.FillEllipse(fundo, cx - 4, my - 1, 8, 8);
-                }
-                else if (Tipo == Icone.App)
-                {
-                    g.FillPolygon(br, new[] { new PointF(cx - 12, my - 18), new PointF(cx - 12, my + 18), new PointF(cx + 18, my) });
-                }
-                else if (Desligado)
-                {
-                    using (var pen = new Pen(cor, 6)) { g.DrawLine(pen, cx - 14, my - 14, cx + 14, my + 14); g.DrawLine(pen, cx + 14, my - 14, cx - 14, my + 14); }
-                }
-            }
-            else
-            {
-                // controle (Steam Big Picture)
-                using (var p = Arred(new RectangleF(cx - 70, 40, 140, 80), 36)) g.FillPath(br, p);
-                g.FillRectangle(fundo, cx - 46, 72, 26, 8); g.FillRectangle(fundo, cx - 37, 63, 8, 26);
-                g.FillEllipse(fundo, cx + 24, 60, 12, 12); g.FillEllipse(fundo, cx + 36, 74, 12, 12);
-            }
-            var fmt = new StringFormat { Alignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
-            g.DrawString(Text, Font, br, new RectangleF(10, 160, Width - 20, 44), fmt);
-            if (Aviso != "")
-                using (var f2 = new Font("Segoe UI", 10f)) g.DrawString(Aviso, f2, br, new RectangleF(10, 206, Width - 20, 36), fmt);
-        }
-    }
+    public bool Online, Pareado, Ocupado, Favorito;
+    public long Ultimo; // última vez que jogou nele (ticks), para "Sessões Recentes"
 }
 
 // ---------------- janela principal do PC da TV ----------------
-class TelaTV : Form
+class TelaTV : Casca
 {
     readonly Config cfg;
-    readonly Panel topo, corpo;
-    readonly Label titulo;
-    readonly Button bVoltar, bAdicionar, bAjuda, bConfig;
-    readonly FlowLayoutPanel pcs, apps;
     Panel config;
     readonly List<PcInfo> lista = new List<PcInfo>();
-    PcInfo atual;
     readonly System.Windows.Forms.Timer relogio = new System.Windows.Forms.Timer { Interval = 12000 };
     bool procurando;
 
-    static readonly Color Fundo = Color.FromArgb(48, 48, 48);
-    static readonly Color Barra = Color.FromArgb(14, 120, 104);
+    static readonly Color Fundo = Cores.Fundo;
+    static readonly Color Barra = Cores.Laranja;
 
-    public TelaTV(Config c)
+    public TelaTV(Config c) : base("TELAR · PC da TV")
     {
         cfg = c;
-        Text = "TELAR"; BackColor = Fundo; ForeColor = Color.White; Font = new Font("Segoe UI", 10f);
-        StartPosition = FormStartPosition.CenterScreen; Size = new Size(1280, 820); MinimumSize = new Size(820, 560);
-        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-
-        topo = new Panel { Dock = DockStyle.Top, Height = 56, BackColor = Barra };
-        titulo = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 15f), ForeColor = Color.White };
-        bVoltar = Icone("", "Voltar"); bVoltar.Dock = DockStyle.Left;
-        bConfig = Icone("", "Configurações"); bConfig.Dock = DockStyle.Right;
-        bAjuda = Icone("", "Ajuda"); bAjuda.Dock = DockStyle.Right;
-        bAdicionar = Icone("", "Adicionar PC pelo IP"); bAdicionar.Dock = DockStyle.Right;
-        topo.Controls.AddRange(new Control[] { titulo, bVoltar, bAdicionar, bAjuda, bConfig });
-
-        corpo = new Panel { Dock = DockStyle.Fill, BackColor = Fundo };
-        pcs = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(8), BackColor = Fundo };
-        apps = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(8), BackColor = Fundo };
-        corpo.Controls.Add(pcs);
-        Controls.Add(corpo); Controls.Add(topo);
-
-        bVoltar.Click += delegate { MostrarPCs(); };
-        bConfig.Click += delegate { MostrarConfig(); };
-        bAdicionar.Click += delegate { AdicionarManual(); };
-        bAjuda.Click += delegate { Ajuda(); };
-        relogio.Tick += delegate { if (cfg.Get("tv.procurar") != "0") Procurar(); };
-        FormClosing += delegate { Salvar(); };
+        string ip = Util.IpLocal();
+        Heroi("Este dispositivo", ip == "" ? "sem rede" : ip);
+        BotaoHeroi("", "Como usar").Click += delegate { Ajuda(); };
+        BotaoHeroi("", "Procurar PCs agora").Click += delegate { Procurar(); };
+        Aviso("Clique num PC Forte para jogar.   Durante o jogo: Ctrl+Alt+Shift+Q sai  ·  Ctrl+Alt+Shift+Z solta o mouse  ·  Ctrl+Alt+Shift+S estatísticas", Cores.Laranja);
+        MarcadorEndereco("Digite o endereço remoto (IP do PC Forte)");
 
         foreach (var s in cfg.Get("tv.pcs").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
         {
             var x = s.Split('|');
-            if (x.Length >= 2) lista.Add(new PcInfo { Ip = x[0], Nome = x[1], Pareado = x.Length > 2 && x[2] == "1" });
+            if (x.Length < 2) continue;
+            long ult = 0; if (x.Length > 4) long.TryParse(x[4], out ult);
+            lista.Add(new PcInfo { Ip = x[0], Nome = x[1], Pareado = x.Length > 2 && x[2] == "1", Favorito = x.Length > 3 && x[3] == "1", Ultimo = ult });
         }
+
+        AbaMudou += delegate { Redesenhar(); };
+        Conectar += endereco => ConectarEndereco(endereco);
+        AbrirMenu += delegate { MostrarMenu(); };
+        DefinirAbas("Encontrados", "Sessões Recentes", "Favoritos");
+
+        relogio.Tick += delegate { if (cfg.Get("tv.procurar") != "0") Procurar(); };
+        FormClosing += delegate { Salvar(); };
         Shown += delegate
         {
-            MostrarPCs();
             if (!File.Exists(App.ClienteExe)) MessageBox.Show(this, "Falta o receptor do TELAR. Rode o TELAR-Setup.exe de novo.", "TELAR");
             Procurar(); relogio.Start();
         };
-    }
-
-    Button Icone(string glifo, string dica)
-    {
-        var b = new Button { Text = glifo, Font = new Font("Segoe MDL2 Assets", 15f), Width = 56, FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Barra, Cursor = Cursors.Hand, TabStop = false };
-        b.FlatAppearance.BorderSize = 0; b.FlatAppearance.MouseOverBackColor = Color.FromArgb(20, 145, 126);
-        new ToolTip().SetToolTip(b, dica);
-        return b;
     }
 
     string G(string chave, string padrao) { string v = cfg.Get("tv." + chave); return v == "" ? padrao : v; }
@@ -163,53 +66,61 @@ class TelaTV : Form
 
     void Salvar()
     {
-        cfg.Set("tv.pcs", string.Join(";", lista.Select(p => p.Ip + "|" + p.Nome.Replace("|", " ").Replace(";", " ") + "|" + (p.Pareado ? "1" : "0")).ToArray()));
+        cfg.Set("tv.pcs", string.Join(";", lista.Select(p => p.Ip + "|" + p.Nome.Replace("|", " ").Replace(";", " ") + "|" + (p.Pareado ? "1" : "0") + "|" + (p.Favorito ? "1" : "0") + "|" + p.Ultimo).ToArray()));
         cfg.Salvar();
     }
 
-    void Pagina(Control c, string t, bool voltar)
+    void MostrarMenu()
     {
-        corpo.Controls.Clear(); corpo.Controls.Add(c);
-        titulo.Text = t; bVoltar.Visible = voltar; bAdicionar.Visible = !voltar;
+        var m = new ContextMenuStrip();
+        m.Items.Add("Configurações", null, delegate { MostrarConfig(); });
+        m.Items.Add("Adicionar PC pelo endereço...", null, delegate { AdicionarManual(); });
+        m.Items.Add("Procurar PCs agora", null, delegate { Procurar(); });
+        m.Items.Add("Como usar", null, delegate { Ajuda(); });
+        m.Show(bMenu, new Point(bMenu.Width - m.Width, bMenu.Height));
     }
 
-    // ---------------- Computadores ----------------
-    void MostrarPCs()
-    {
-        atual = null;
-        Pagina(pcs, "Computadores", false);
-        Redesenhar();
-    }
-
+    // ---------------- cartões dos PCs ----------------
     void Redesenhar()
     {
-        pcs.SuspendLayout();
-        pcs.Controls.Clear();
-        foreach (var pc in lista.OrderByDescending(p => p.Online).ThenBy(p => p.Nome))
+        if (!cartoes.Visible) return;
+        Status(lista.Any(p => p.Online));
+        cartoes.SuspendLayout();
+        cartoes.Controls.Clear();
+        IEnumerable<PcInfo> quais =
+            abaAtual == 1 ? lista.Where(p => p.Ultimo > 0).OrderByDescending(p => p.Ultimo) :
+            abaAtual == 2 ? lista.Where(p => p.Favorito).OrderBy(p => p.Nome) :
+            lista.OrderByDescending(p => p.Online).ThenBy(p => p.Nome);
+        foreach (var pc in quais)
         {
-            var b = new Bloco { Text = pc.Nome, Cadeado = !pc.Pareado, Desligado = !pc.Online, Tag = pc };
-            b.Aviso = pc.Ocupado ? "Conectando..." : !pc.Online ? (procurando ? "Procurando..." : "Desligado") : pc.Ip.StartsWith("100.") ? "fora de casa · " + pc.Ip : pc.Ip;
+            string l1 = pc.Ocupado ? "Conectando..." : !pc.Online ? (procurando ? "Procurando..." : "Desligado ou fora da rede")
+                : pc.Ip.StartsWith("100.") ? "Fora de casa · modo trabalho" : pc.Pareado ? "Na rede · pronto para jogar" : "Na rede · precisa do código";
+            var c = NovoCartao(pc.Nome, l1, pc.Ip + (pc.Favorito ? "  ★" : ""), pc.Online ? Cores.DoNome(pc.Nome) : Color.FromArgb(78, 78, 78),
+                !pc.Online ? Cartao.Desenho.Desligado : pc.Pareado ? Cartao.Desenho.Pc : Cartao.Desenho.Cadeado);
             var info = pc;
-            b.Click += delegate { AbrirPC(info); };
+            c.Click += delegate { AbrirPC(info, "Desktop"); };
             var menu = new ContextMenuStrip();
-            menu.Items.Add("Ver apps", null, delegate { AbrirPC(info); });
+            menu.Items.Add("Jogar (tela inteira)", null, delegate { AbrirPC(info, "Desktop"); });
+            menu.Items.Add("Abrir Steam Big Picture", null, delegate { AbrirPC(info, "Steam Big Picture"); });
+            menu.Items.Add(info.Favorito ? "Tirar dos favoritos" : "Adicionar aos favoritos", null, delegate { info.Favorito = !info.Favorito; Salvar(); Redesenhar(); });
             menu.Items.Add("Conectar de novo (código)", null, delegate { Parear(info); });
-            menu.Items.Add("Detalhes", null, delegate { MessageBox.Show(this, "Nome: " + info.Nome + "\nIP: " + info.Ip + "\nPareado: " + (info.Pareado ? "sim" : "não") + "\nNa rede agora: " + (info.Online ? "sim" : "não"), "TELAR"); });
+            menu.Items.Add("Detalhes", null, delegate { MessageBox.Show(this, "Nome: " + info.Nome + "\nEndereço: " + info.Ip + "\nConectado (código aceito): " + (info.Pareado ? "sim" : "não") + "\nNa rede agora: " + (info.Online ? "sim" : "não"), "TELAR"); });
             menu.Items.Add("Esquecer este PC", null, delegate { lista.Remove(info); Salvar(); Redesenhar(); });
-            b.ContextMenuStrip = menu;
-            pcs.Controls.Add(b);
+            c.ContextMenuStrip = menu;
         }
-        if (lista.Count == 0)
-            pcs.Controls.Add(new Label { AutoSize = false, Size = new Size(700, 80), ForeColor = Color.FromArgb(190, 190, 190), Font = new Font("Segoe UI", 12f), Margin = new Padding(16),
-                Text = procurando ? "Procurando o PC Forte na rede..." : "Nenhum PC Forte encontrado. Confira se o TELAR está instalado e ligado nele, ou clique em + para digitar o IP." });
-        pcs.ResumeLayout();
+        if (cartoes.Controls.Count == 0)
+            TextoVazio(abaAtual == 1 ? "Os PCs em que você jogar vão aparecer aqui." :
+                       abaAtual == 2 ? "Clique com o botão direito num PC e escolha \"Adicionar aos favoritos\"." :
+                       procurando ? "Procurando o PC Forte na rede..." :
+                       "Nenhum PC Forte encontrado. Confira se o TELAR está instalado e ligado nele, ou digite o endereço lá em cima.");
+        cartoes.ResumeLayout();
     }
 
     void Procurar()
     {
         if (procurando) return;
         procurando = true;
-        if (atual == null && corpo.Controls.Contains(pcs)) Redesenhar();
+        Redesenhar();
         ThreadPool.QueueUserWorkItem(_ =>
         {
             var achados = Util.ProcurarPCsForte();
@@ -225,7 +136,7 @@ class TelaTV : Form
                     pc.Nome = x[1]; pc.Online = true;
                 }
                 Salvar();
-                if (atual == null && corpo.Controls.Contains(pcs)) Redesenhar();
+                Redesenhar();
                 ConferirPareamento();
             }));
         });
@@ -242,26 +153,30 @@ class TelaTV : Form
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 string lixo; bool ok = Listar(alvo.Ip, out lixo) == 0;
-                BeginInvoke((Action)(() =>
-                {
-                    alvo.Pareado = ok; Salvar();
-                    if (atual == null && corpo.Controls.Contains(pcs)) Redesenhar();
-                }));
+                BeginInvoke((Action)(() => { alvo.Pareado = ok; Salvar(); Redesenhar(); }));
             });
         }
     }
 
     void AdicionarManual()
     {
-        string ip = Perguntar("Adicionar PC", "Digite o IP do PC Forte (aparece no TELAR de lá).\nFora de casa use o IP do Tailscale, que começa com 100.");
-        if (string.IsNullOrEmpty(ip)) return;
-        ip = ip.Trim();
-        if (lista.All(p => p.Ip != ip)) lista.Add(new PcInfo { Ip = ip, Nome = ip });
-        Salvar(); Redesenhar(); Procurar();
+        string ip = Perguntar("Adicionar PC", "Digite o endereço do PC Forte (aparece no TELAR de lá).\nFora de casa use o endereço do Tailscale, que começa com 100.");
+        if (!string.IsNullOrEmpty(ip)) ConectarEndereco(ip.Trim(), false);
     }
 
-    // clicar num PC: confere se está pareado e mostra os apps; se não estiver, pareia
-    void AbrirPC(PcInfo pc)
+    // barra de endereço: digitou o IP e apertou Enter / seta
+    void ConectarEndereco(string endereco) { ConectarEndereco(endereco, true); }
+    void ConectarEndereco(string endereco, bool jogar)
+    {
+        if (endereco == "") { Aviso("Digite o endereço do PC Forte (ex.: 192.168.0.10) e aperte Enter.", Cores.Laranja); return; }
+        var pc = lista.FirstOrDefault(p => p.Ip == endereco);
+        if (pc == null) { pc = new PcInfo { Ip = endereco, Nome = endereco, Online = true }; lista.Add(pc); }
+        Salvar(); Redesenhar();
+        if (jogar) AbrirPC(pc, "Desktop"); else Procurar();
+    }
+
+    // clicar num PC: se já está pareado abre direto; se não, pede o código
+    void AbrirPC(PcInfo pc, string app)
     {
         if (pc.Ocupado) return;
         pc.Ocupado = true; Redesenhar();
@@ -271,17 +186,11 @@ class TelaTV : Form
             BeginInvoke((Action)(() =>
             {
                 pc.Ocupado = false;
-                if (c == 0)
-                {
-                    pc.Pareado = true; pc.Online = true; Salvar();
-                    var nomes = saida.Split('\n').Select(l => l.Trim()).Where(l => l != "" && !l.Contains(" - ") && !l.StartsWith("Usage")).ToList();
-                    if (nomes.Count == 0) nomes = new List<string> { "Desktop", "Steam Big Picture" };
-                    MostrarApps(pc, nomes);
-                }
+                if (c == 0) { pc.Pareado = true; pc.Online = true; Salvar(); Redesenhar(); Jogar(pc, app); }
                 else
                 {
                     pc.Pareado = false; Salvar(); Redesenhar();
-                    Parear(pc);
+                    if (Parear(pc)) Jogar(pc, app);
                 }
             }));
         });
@@ -305,33 +214,17 @@ class TelaTV : Form
         catch { return -998; }
     }
 
-    // ---------------- apps do PC ----------------
-    void MostrarApps(PcInfo pc, List<string> nomes)
-    {
-        atual = pc;
-        apps.Controls.Clear();
-        foreach (var n in nomes)
-        {
-            var b = new Bloco { Text = n, Tipo = n.IndexOf("Steam", StringComparison.OrdinalIgnoreCase) >= 0 ? Bloco.Icone.Steam : Bloco.Icone.App };
-            var plano = Plano(pc.Ip);
-            b.Aviso = plano.Largura + "x" + plano.Altura + " · " + plano.Fps + " FPS";
-            string app = n;
-            b.Click += delegate { Jogar(pc, app); };
-            apps.Controls.Add(b);
-        }
-        Pagina(apps, pc.Nome, true);
-    }
-
     void Jogar(PcInfo pc, string app)
     {
         var plano = Plano(pc.Ip);
-        if (plano.Aviso != "") titulo.Text = pc.Nome + "  ·  " + plano.Aviso;
+        pc.Ultimo = DateTime.Now.Ticks; Salvar();
+        Aviso("Abrindo " + pc.Nome + " em " + plano.Largura + "x" + plano.Altura + " a " + plano.Fps + " FPS" + (plano.Aviso != "" ? "  ·  " + plano.Aviso : "") + ".   Ctrl+Alt+Shift+Q volta para cá.", Cores.Laranja);
         Receptor.Abrir(Argumentos(pc.Ip, app, plano, cfg), false);
     }
 
     // ---------------- pareamento ----------------
     // conectar: a pessoa digita aqui o código que aparece no TELAR do PC Forte; o PC Forte confirma sozinho
-    void Parear(PcInfo pc)
+    bool Parear(PcInfo pc)
     {
         var f = new Form { Text = "Conectar com " + pc.Nome, BackColor = Fundo, ForeColor = Color.White, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(460, 320), Font = Font };
         f.Controls.Add(new Label { Text = "Digite o código que aparece no TELAR do PC Forte:", ForeColor = Color.FromArgb(200, 200, 200), Bounds = new Rectangle(24, 20, 420, 24) });
@@ -383,7 +276,7 @@ class TelaTV : Form
         f.FormClosed += delegate { tm.Stop(); if (p != null && !p.HasExited) try { p.Kill(); } catch { } };
         f.ShowDialog(this);
         pc.Pareado = pareado; Salvar(); Redesenhar();
-        if (pareado) AbrirPC(pc);
+        return pareado;
     }
 
     // ---------------- plano de transmissão ----------------
@@ -560,13 +453,12 @@ class TelaTV : Form
         Check(s7, "procurar", "Encontre PCs automaticamente na rede (Recomendado)", true);
         Check(s7, "foraAuto", "Fora de casa (Tailscale) usar modo trabalho: resolução desta tela, 60 FPS, mouse de área de trabalho e texto nítido", true);
 
-        Pagina(config, "Configurações", true);
-        titulo.Text = "Configurações  ·  TELAR v" + App.Versao;
+        AbrirPagina(config, "Configurações");
     }
 
     FlowLayoutPanel Secao(FlowLayoutPanel coluna, string nome, int largura)
     {
-        coluna.Controls.Add(new Label { Text = nome, ForeColor = Color.FromArgb(90, 200, 180), AutoSize = true, Margin = new Padding(4, 12, 0, 4), Font = new Font("Segoe UI", 10f) });
+        coluna.Controls.Add(new Label { Text = nome, ForeColor = Cores.Laranja, AutoSize = true, Margin = new Padding(4, 12, 0, 4), Font = new Font("Segoe UI", 10f) });
         var s = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Width = largura, MinimumSize = new Size(largura, 0), Padding = new Padding(10), Margin = new Padding(4, 0, 4, 4), BackColor = Color.FromArgb(56, 56, 56) };
         coluna.Controls.Add(s);
         return s;
