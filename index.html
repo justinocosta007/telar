@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TELAR</title>
+<style>
+  :root { --bg:#14171b; --card:#20242a; --fg:#e8ebef; --muted:#949eaa; --teal:#0e8a76; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 "Segoe UI", system-ui, sans-serif }
+  main { max-width:720px; margin:0 auto; padding:56px 20px }
+  h1 { font-size:48px; margin:0 0 4px; letter-spacing:-.02em }
+  .sub { color:var(--muted); margin:0 0 32px }
+  .baixar { display:inline-block; background:var(--teal); color:#fff; text-decoration:none; font-weight:600; padding:14px 26px; border-radius:10px }
+  .ver { color:var(--muted); font-size:13px; margin-left:12px }
+  ol { background:var(--card); border-radius:12px; padding:20px 20px 20px 40px; margin-top:32px }
+  li { margin:6px 0 }
+  table { width:100%; border-collapse:collapse; margin-top:24px; font-size:14px }
+  td, th { text-align:left; padding:8px 6px; border-top:1px solid #2c323a }
+  th { color:var(--muted); font-weight:500 }
+</style>
+</head>
+<body>
+<main>
+  <h1>TELAR</h1>
+  <p class="sub">Jogue na TV usando a força do PC da sala. A tela inteira, o áudio e os controles, em até 1440p a 120 FPS.</p>
+  <a class="baixar" href="https://github.com/justinocosta007/telar/releases/latest/download/TELAR-Setup.exe">Baixar TELAR-Setup.exe</a><span class="ver" id="ver"></span>
+  <p class="sub" style="margin-top:12px;font-size:14px">Um arquivo só, com tudo dentro. Não precisa instalar mais nada. Se o Windows mostrar "O Windows protegeu o computador", clique em <b>Mais informações</b> e depois em <b>Executar assim mesmo</b>.</p>
+  <ol>
+    <li>Rode o TELAR-Setup.exe nos dois PCs.</li>
+    <li>No PC da sala escolha <b>PC Forte</b>. No PC da TV escolha <b>PC da TV</b>.</li>
+    <li>No PC da TV digite o IP que aparece no TELAR do PC Forte.</li>
+    <li>Clique em <b>Parear</b> na TV e digite o PIN no TELAR do PC Forte.</li>
+    <li>Escolha a qualidade e clique em <b>Jogar</b>. O TELAR se atualiza sozinho.</li>
+  </ol>
+  <table>
+    <tr><th>Qualidade</th><th>Uso</th><th>Bitrate</th></tr>
+    <tr><td>Quad HD 1440p 120fps</td><td>padrão em casa (cai para 60 se a TV não aceitar 120 Hz)</td><td>75 Mbps</td></tr>
+    <tr><td>4K 2160p 60fps</td><td>opção em casa</td><td>80 Mbps</td></tr>
+    <tr><td>Full HD 1080p 60fps</td><td>padrão fora de casa (Tailscale)</td><td>12 Mbps</td></tr>
+  </table>
+</main>
+<script>
+fetch('version.json?t=' + Date.now()).then(r => r.json()).then(v => { document.getElementById('ver').textContent = 'versão ' + v.version; }).catch(() => {});
+</script>
+</body>
+</html>
