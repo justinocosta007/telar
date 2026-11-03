@@ -23,7 +23,7 @@ using System.Windows.Forms;
 
 static class App
 {
-    public const int Versao = 3;
+    public const int Versao = 4;
     public const string SiteUrl = "https://justinocosta007.github.io/telar/";
     public static readonly string Pasta = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TELAR");
     public static readonly string PastaPrograma = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "TELAR");
@@ -600,6 +600,16 @@ class Janela : Form
         ClientSize = new Size(w, h);
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
     }
+    // deixa a janela maximizar: o conteúdo vai para um painel que fica centralizado
+    protected void PermitirMaximizar()
+    {
+        var painel = new Panel { Size = ClientSize, BackColor = BackColor };
+        foreach (var c in Controls.Cast<Control>().ToArray()) painel.Controls.Add(c);
+        Controls.Add(painel);
+        FormBorderStyle = FormBorderStyle.Sizable; MaximizeBox = true; MinimumSize = Size;
+        Resize += delegate { painel.Left = Math.Max(0, (ClientSize.Width - painel.Width) / 2); painel.Top = Math.Max(0, (ClientSize.Height - painel.Height) / 2); };
+    }
+
     protected Label Rotulo(string t, int x, int y, int w, float tam, Color cor, bool negrito = false)
     {
         var l = new Label { Text = t, ForeColor = cor, AutoSize = false, Font = new Font(negrito ? "Segoe UI Semibold" : "Segoe UI", tam), Bounds = new Rectangle(x, y, w, (int)(tam * 2.2f) + 4) };
@@ -644,7 +654,7 @@ class TelaForte : Janela
     readonly TextBox tPin, tNome, log;
     readonly Button bPreparar, bLiberar;
 
-    public TelaForte(Config c) : base("TELAR · PC Forte", 520, 560)
+    public TelaForte(Config c) : base("TELAR · PC Forte", 520, 540)
     {
         cfg = c;
         Rotulo("TELAR", 24, 16, 300, 20f, App.Texto, true);
@@ -658,21 +668,27 @@ class TelaForte : Janela
         lIpFora = Rotulo("", 270, 180, 230, 12f, App.Texto, true);
         Rotulo("Digite esses IPs no TELAR do PC da TV.", 26, 214, 470, 9f, App.Apagado);
 
-        bPreparar = Botao("Preparar motor", 26, 246, 468, App.Cinza);
-        bPreparar.Click += delegate { Preparar(); };
-
-        Rotulo("Liberar um PC da TV", 26, 304, 400, 12f, App.Texto, true);
-        Rotulo("PIN que aparece na TV", 26, 336, 200, 9f, App.Apagado);
-        Rotulo("Nome do aparelho", 250, 336, 200, 9f, App.Apagado);
-        tPin = Caixa("", 26, 358, 210); tPin.Font = new Font("Segoe UI Semibold", 14f); tPin.MaxLength = 4;
-        tNome = Caixa("PC da TV", 250, 358, 244); tNome.Font = new Font("Segoe UI", 14f);
-        bLiberar = Botao("Liberar", 26, 404, 468, App.Casa);
+        Rotulo("Liberar um PC da TV", 26, 246, 400, 12f, App.Texto, true);
+        Rotulo("PIN que aparece na TV", 26, 278, 200, 9f, App.Apagado);
+        Rotulo("Nome do aparelho", 250, 278, 200, 9f, App.Apagado);
+        tPin = Caixa("", 26, 300, 210); tPin.Font = new Font("Segoe UI Semibold", 14f); tPin.MaxLength = 4;
+        tNome = Caixa("PC da TV", 250, 300, 244); tNome.Font = new Font("Segoe UI", 14f);
+        bLiberar = Botao("Liberar", 26, 346, 468, App.Casa);
         bLiberar.Click += delegate { Liberar(); };
-        lPar = Rotulo("", 26, 450, 468, 9.5f, App.Apagado);
+        lPar = Rotulo("", 26, 392, 468, 9.5f, App.Apagado);
 
-        log = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = App.Cartao, ForeColor = App.Apagado, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 9f), Bounds = new Rectangle(26, 478, 468, 66) };
+        log = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = App.Cartao, ForeColor = App.Apagado, BorderStyle = BorderStyle.None, Font = new Font("Consolas", 9f), Bounds = new Rectangle(26, 420, 468, 60) };
         Controls.Add(log);
+
+        // só para quando algo der errado: refaz placa de vídeo, senha interna, firewall, serviço e driver de controle
+        bPreparar = Botao("Reparar motor", 26, 494, 140, App.Cinza, 30);
+        bPreparar.Font = new Font("Segoe UI", 9f);
+        bPreparar.Click += delegate { Preparar(); };
+        var dica = Rotulo("Só se o motor aparecer desligado ou o pareamento falhar. Pede permissão de administrador.", 176, 492, 320, 8.5f, App.Apagado);
+        dica.Height = 36;
+
         AcceptButton = bLiberar;
+        PermitirMaximizar();
         Shown += delegate { Atualizar(); };
     }
 
