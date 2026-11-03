@@ -193,7 +193,7 @@ class TelaTV : Form
             b.Click += delegate { AbrirPC(info); };
             var menu = new ContextMenuStrip();
             menu.Items.Add("Ver apps", null, delegate { AbrirPC(info); });
-            menu.Items.Add("Parear de novo", null, delegate { Parear(info); });
+            menu.Items.Add("Conectar de novo (código)", null, delegate { Parear(info); });
             menu.Items.Add("Detalhes", null, delegate { MessageBox.Show(this, "Nome: " + info.Nome + "\nIP: " + info.Ip + "\nPareado: " + (info.Pareado ? "sim" : "não") + "\nNa rede agora: " + (info.Online ? "sim" : "não"), "TELAR"); });
             menu.Items.Add("Esquecer este PC", null, delegate { lista.Remove(info); Salvar(); Redesenhar(); });
             b.ContextMenuStrip = menu;
@@ -330,23 +330,37 @@ class TelaTV : Form
     }
 
     // ---------------- pareamento ----------------
+    // conectar: a pessoa digita aqui o código que aparece no TELAR do PC Forte; o PC Forte confirma sozinho
     void Parear(PcInfo pc)
     {
-        string pin = new Random().Next(1000, 10000).ToString();
-        var p = Receptor.Abrir("pair \"" + pc.Ip + "\" --pin " + pin, true);
-        var f = new Form { Text = "Parear com " + pc.Nome, BackColor = Fundo, ForeColor = Color.White, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(460, 300), Font = Font };
-        f.Controls.Add(new Label { Text = "No TELAR do PC Forte, digite este PIN e clique em Liberar:", ForeColor = Color.FromArgb(200, 200, 200), Bounds = new Rectangle(24, 20, 420, 24) });
-        f.Controls.Add(new Label { Text = pin, Font = new Font("Segoe UI Semibold", 48f), ForeColor = Color.White, Bounds = new Rectangle(24, 52, 420, 100) });
-        var st = new Label { Text = "Esperando o PC Forte liberar...", ForeColor = Color.FromArgb(200, 200, 200), Bounds = new Rectangle(24, 168, 420, 50) };
+        var f = new Form { Text = "Conectar com " + pc.Nome, BackColor = Fundo, ForeColor = Color.White, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(460, 320), Font = Font };
+        f.Controls.Add(new Label { Text = "Digite o código que aparece no TELAR do PC Forte:", ForeColor = Color.FromArgb(200, 200, 200), Bounds = new Rectangle(24, 20, 420, 24) });
+        var tCod = new TextBox { MaxLength = 4, Font = new Font("Segoe UI Semibold", 40f), BackColor = Color.FromArgb(70, 70, 70), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, TextAlign = HorizontalAlignment.Center, Bounds = new Rectangle(24, 52, 412, 90) };
+        f.Controls.Add(tCod);
+        var st = new Label { Text = "O TELAR precisa estar aberto no PC Forte.", ForeColor = Color.FromArgb(200, 200, 200), Bounds = new Rectangle(24, 156, 420, 60) };
         f.Controls.Add(st);
-        var ok = new Button { Text = "Fechar", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(70, 70, 70), ForeColor = Color.White, Bounds = new Rectangle(24, 236, 412, 42) };
-        ok.FlatAppearance.BorderSize = 0; ok.Click += delegate { f.Close(); }; f.Controls.Add(ok);
-        // o receptor continua aberto depois de parear; por isso confere a cada 2 s se o PC Forte já liberou
+        var ok = new Button { Text = "Conectar", FlatStyle = FlatStyle.Flat, BackColor = Barra, ForeColor = Color.White, Bounds = new Rectangle(24, 256, 412, 44), Font = new Font("Segoe UI Semibold", 11f) };
+        ok.FlatAppearance.BorderSize = 0; f.Controls.Add(ok); f.AcceptButton = ok;
+        tCod.KeyPress += (s, e) => { if (!char.IsDigit(e.KeyChar) && !char.IsControl(e.KeyChar)) e.Handled = true; };
+
+        Process p = null;
         var tm = new System.Windows.Forms.Timer { Interval = 2000 };
         bool conferindo = false, pareado = false;
+        DateTime inicio = DateTime.Now;
+        ok.Click += delegate
+        {
+            if (pareado) { f.Close(); return; }
+            if (p != null) return;
+            if (tCod.Text.Length != 4) { st.ForeColor = Color.FromArgb(240, 120, 110); st.Text = "O código tem 4 números."; return; }
+            p = Receptor.Abrir("pair \"" + pc.Ip + "\" --pin " + tCod.Text, true);
+            inicio = DateTime.Now; tCod.Enabled = false; ok.Enabled = false;
+            st.ForeColor = Color.FromArgb(200, 200, 200); st.Text = "Conectando...";
+            tm.Start();
+        };
+        // o receptor continua aberto depois de parear; por isso confere a cada 2 s se já está pareado
         tm.Tick += delegate
         {
-            if (conferindo) return;
+            if (conferindo || p == null) return;
             conferindo = true;
             ThreadPool.QueueUserWorkItem(_ =>
             {
@@ -354,18 +368,19 @@ class TelaTV : Form
                 f.BeginInvoke((Action)(() =>
                 {
                     conferindo = false;
-                    if (!deu && !p.HasExited) return;
+                    bool desistir = p.HasExited || (DateTime.Now - inicio).TotalSeconds > 40;
+                    if (!deu && !desistir) return;
                     tm.Stop();
                     if (!p.HasExited) try { p.Kill(); } catch { }
                     pareado = deu;
                     st.ForeColor = deu ? Color.FromArgb(90, 210, 130) : Color.FromArgb(240, 120, 110);
-                    st.Text = deu ? "Pareado. Pode jogar." : "Não pareou. Confira se o TELAR está aberto no PC Forte e tente de novo.";
-                    ok.Text = deu ? "Ver apps" : "Fechar";
+                    st.Text = deu ? "Conectado. Pode jogar." : "Não conectou. Confira o código no PC Forte (ele precisa estar com o TELAR aberto) e tente de novo.";
+                    ok.Text = deu ? "Ver apps" : "Tentar de novo"; ok.Enabled = true;
+                    if (!deu) { p = null; tCod.Enabled = true; tCod.SelectAll(); tCod.Focus(); }
                 }));
             });
         };
-        tm.Start();
-        f.FormClosed += delegate { tm.Stop(); if (!p.HasExited) try { p.Kill(); } catch { } };
+        f.FormClosed += delegate { tm.Stop(); if (p != null && !p.HasExited) try { p.Kill(); } catch { } };
         f.ShowDialog(this);
         pc.Pareado = pareado; Salvar(); Redesenhar();
         if (pareado) AbrirPC(pc);
@@ -598,7 +613,7 @@ class TelaTV : Form
             "Como usar o TELAR na TV:\n\n" +
             "1. Instale o TELAR no PC Forte (opção PC Forte) e deixe ele ligado.\n" +
             "2. Aqui, o PC Forte aparece sozinho em Computadores. Se não aparecer, clique em + e digite o IP mostrado no PC Forte.\n" +
-            "3. Clique no PC com cadeado: aparece um PIN. Digite o PIN no TELAR do PC Forte e clique em Liberar.\n" +
+            "3. Clique no PC com cadeado e digite o código que aparece no TELAR do PC Forte. Ele confirma sozinho.\n" +
             "4. Clique no PC e escolha Desktop para ver a tela inteira do PC Forte.\n\n" +
             "Durante o jogo: Ctrl+Alt+Shift+Q sai, Ctrl+Alt+Shift+S mostra as estatísticas, Ctrl+Alt+Shift+Z solta o mouse.\n" +
             "Fora de casa (acesso remoto para trabalho): instale o Tailscale nos dois PCs e use o IP 100.x do PC Forte. O TELAR entra sozinho no modo trabalho.",
