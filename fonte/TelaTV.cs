@@ -381,7 +381,10 @@ class TelaTV : Form
         Func<string, string, string> G = (k, d) => { string v = cfg.Get("tv." + k); return v == "" ? d : v; };
         var p = new PlanoTx { Fora = ip.StartsWith("100.") && G("foraAuto", "1") == "1" };
         string res = G("res", "auto"), fps = G("fps", "auto");
-        p.Altura = res == "auto" ? (p.Fora ? 1080 : 1440) : int.Parse(res);
+        // fora de casa é acesso remoto para trabalho: usa a resolução da tela daqui (texto nítido, sem escala)
+        int alturaTela = Tela.Atual()[1];
+        int foraAltura = alturaTela >= 1440 ? 1440 : alturaTela >= 1080 ? 1080 : 720;
+        p.Altura = res == "auto" ? (p.Fora ? foraAltura : 1440) : int.Parse(res);
         p.Largura = p.Altura == 2160 ? 3840 : p.Altura == 1440 ? 2560 : p.Altura == 1080 ? 1920 : 1280;
         p.Fps = fps == "auto" ? (hz >= 119 ? 120 : 60) : int.Parse(fps);
         if (p.Fps > 60 && hz < p.Fps - 1)
@@ -389,7 +392,7 @@ class TelaTV : Form
             p.Aviso = "a TV está em " + hz + " Hz, usando " + (hz >= 119 ? 120 : 60) + " FPS";
             p.Fps = hz >= 119 ? 120 : 60;
         }
-        if (p.Fora && p.Fps > 60) { p.Fps = 60; p.Aviso = "fora de casa: 60 FPS"; }
+        if (p.Fora && p.Fps > 60) { p.Fps = 60; p.Aviso = "modo trabalho: 60 FPS"; }
         int auto = BitrateAuto(p.Altura, p.Fps, p.Fora);
         string br = G("bitrate", "auto");
         p.Kbps = br == "auto" ? auto : int.Parse(br);
@@ -414,7 +417,10 @@ class TelaTV : Form
         a.AppendFormat("stream \"{0}\" \"{1}\" --resolution {2}x{3} --fps {4} --bitrate {5}", ip, app, p.Largura, p.Altura, p.Fps, p.Kbps);
         a.Append(" --display-mode " + G("exibicao", "fullscreen"));
         bool vsync = B("vsync", false), ritmo = B("ritmo", false);
-        if (p.Fora) { vsync = true; ritmo = true; } // internet oscila: suaviza
+        bool mouseRemoto = B("mouseRemoto", false), yuv444 = B("yuv444", false);
+        // fora de casa = trabalho remoto: imagem suave na internet, mouse de área de trabalho
+        // e cores 4:4:4 (texto mais nítido) quando a placa do PC Forte suportar
+        if (p.Fora) { vsync = true; ritmo = true; mouseRemoto = true; yuv444 = true; }
         a.Append(vsync ? " --vsync" : " --no-vsync");
         a.Append(ritmo ? " --frame-pacing" : " --no-frame-pacing");
         a.Append(B("hdr", false) ? " --hdr" : " --no-hdr");
@@ -423,7 +429,7 @@ class TelaTV : Form
         a.Append(B("mudoSemFoco", false) ? " --mute-on-focus-loss" : " --no-mute-on-focus-loss");
         a.Append(B("otimizarJogo", true) ? " --game-optimization" : " --no-game-optimization");
         a.Append(B("sairDepois", false) ? " --quit-after" : " --no-quit-after");
-        a.Append(B("mouseRemoto", false) ? " --absolute-mouse" : " --no-absolute-mouse");
+        a.Append(mouseRemoto ? " --absolute-mouse" : " --no-absolute-mouse");
         a.Append(" --capture-system-keys " + (B("capturarTeclas", true) ? G("capturarQuando", "fullscreen") : "never"));
         a.Append(B("trackpad", false) ? " --touchscreen-trackpad" : " --no-touchscreen-trackpad");
         a.Append(B("trocarMouse", false) ? " --mouse-buttons-swap" : " --no-mouse-buttons-swap");
@@ -433,7 +439,7 @@ class TelaTV : Form
         a.Append(B("controleFundo", false) ? " --background-gamepad" : " --no-background-gamepad");
         a.Append(" --video-decoder " + G("decodificador", "auto"));
         a.Append(" --video-codec " + G("codec", "auto"));
-        a.Append(B("yuv444", false) ? " --yuv444" : " --no-yuv444");
+        a.Append(yuv444 ? " --yuv444" : " --no-yuv444");
         a.Append(B("manterTela", true) ? " --keep-awake" : " --no-keep-awake");
         a.Append(B("stats", false) ? " --performance-overlay" : " --no-performance-overlay");
         return a.ToString();
@@ -537,7 +543,7 @@ class TelaTV : Form
         var cDes = Check(s7, "desbloquear", "Desbloqueie o limite de taxa de bits (Experimental)", false);
         cDes.CheckedChanged += delegate { trilha.Maximum = cDes.Checked ? 500 : 150; atualizarBit(); };
         Check(s7, "procurar", "Encontre PCs automaticamente na rede (Recomendado)", true);
-        Check(s7, "foraAuto", "Ajuste automático fora de casa (Tailscale): 60 FPS e taxa de bits baixa", true);
+        Check(s7, "foraAuto", "Fora de casa (Tailscale) usar modo trabalho: resolução desta tela, 60 FPS, mouse de área de trabalho e texto nítido", true);
 
         Pagina(config, "Configurações", true);
         titulo.Text = "Configurações  ·  TELAR v" + App.Versao;
@@ -595,7 +601,7 @@ class TelaTV : Form
             "3. Clique no PC com cadeado: aparece um PIN. Digite o PIN no TELAR do PC Forte e clique em Liberar.\n" +
             "4. Clique no PC e escolha Desktop para ver a tela inteira do PC Forte.\n\n" +
             "Durante o jogo: Ctrl+Alt+Shift+Q sai, Ctrl+Alt+Shift+S mostra as estatísticas, Ctrl+Alt+Shift+Z solta o mouse.\n" +
-            "Fora de casa: instale o Tailscale nos dois PCs e use o IP 100.x do PC Forte.",
+            "Fora de casa (acesso remoto para trabalho): instale o Tailscale nos dois PCs e use o IP 100.x do PC Forte. O TELAR entra sozinho no modo trabalho.",
             "Ajuda do TELAR");
     }
 }
