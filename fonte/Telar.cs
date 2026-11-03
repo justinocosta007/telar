@@ -23,7 +23,7 @@ using System.Windows.Forms;
 
 static class App
 {
-    public const int Versao = 2;
+    public const int Versao = 3;
     public const string SiteUrl = "https://justinocosta007.github.io/telar/";
     public static readonly string Pasta = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TELAR");
     public static readonly string PastaPrograma = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "TELAR");
