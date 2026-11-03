@@ -1,0 +1,12 @@
+﻿TELAR usa componentes de código aberto, copiados sem modificação dentro do instalador:
+
+- Motor de transmissão (pasta "motor"): Sunshine, de LizardByte
+  Licença: GNU GPL v3. Código-fonte: https://github.com/LizardByte/Sunshine
+
+- Receptor do PC da TV (pasta "cliente"): Moonlight, de Moonlight Game Streaming Project
+  Licença: GNU GPL v3. Código-fonte: https://github.com/moonlight-stream/moonlight-qt
+
+- Driver de controle virtual (pasta "drivers"): ViGEmBus, de Nefarius Software Solutions
+  Licença: BSD 3-Clause. Código-fonte: https://github.com/nefarius/ViGEmBus
+
+Texto completo da GPL v3: https://www.gnu.org/licenses/gpl-3.0.html
