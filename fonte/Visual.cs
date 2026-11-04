@@ -259,6 +259,14 @@ class Casca : Form
         if (AbaMudou != null) AbaMudou(i);
     }
 
+    // apaga os cartões antigos liberando a memória deles (sem isso a janela fica cada vez mais pesada)
+    protected void LimparCartoes()
+    {
+        var velhos = cartoes.Controls.Cast<Control>().ToList();
+        cartoes.Controls.Clear();
+        foreach (var c in velhos) { if (c.ContextMenuStrip != null) c.ContextMenuStrip.Dispose(); c.Dispose(); }
+    }
+
     protected Cartao NovoCartao(string titulo, string l1, string l2, Color cor, Cartao.Desenho icone)
     {
         var c = new Cartao { Titulo = titulo, Linha1 = l1, Linha2 = l2, Cor = cor, Icone = icone };

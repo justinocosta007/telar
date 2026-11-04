@@ -23,7 +23,7 @@ using System.Windows.Forms;
 
 static class App
 {
-    public const int Versao = 6;
+    public const int Versao = 7;
     public const string SiteUrl = "https://justinocosta007.github.io/telar/";
     public static readonly string Pasta = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TELAR");
     public static readonly string PastaPrograma = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "TELAR");
@@ -66,7 +66,14 @@ static class App
         if (cfg.Get("papel") == "") return 0;
         cfg.Salvar();
 
-        if (cfg.Get("papel") == "forte") Application.Run(new TelaForte(cfg));
+        if (cfg.Get("papel") == "forte")
+        {
+            // só uma janela do PC Forte por vez (abre sozinha quando o Windows liga)
+            bool nova; var unica = new Mutex(true, "TELAR-PC-Forte-Janela", out nova);
+            if (!nova) return 0;
+            Application.Run(new TelaForte(cfg, args.Contains("--minimizado")));
+            GC.KeepAlive(unica);
+        }
         else Application.Run(new TelaTV(cfg));
         return 0;
     }
@@ -120,6 +127,17 @@ static class Instalacao
                 if (Directory.Exists(pasta)) foreach (var f in Directory.GetFiles(pasta, "*", SearchOption.AllDirectories)) try { bytes += new FileInfo(f).Length; } catch { }
             k.SetValue("EstimatedSize", (int)(bytes / 1024), Microsoft.Win32.RegistryValueKind.DWord);
         }
+    }
+
+    // PC Forte: o TELAR abre minimizado quando o Windows liga, para aceitar o PC da TV sem ninguém mexer aqui
+    public static void IniciarComWindows()
+    {
+        try
+        {
+            using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
+                k.SetValue("TELAR", "\"" + Path.Combine(App.PastaPrograma, "TELAR.exe") + "\" --minimizado");
+        }
+        catch { }
     }
 
     public static bool Admin
@@ -243,43 +261,102 @@ static class Util
         }
         return "";
     }
-    // acha PCs Fortes com o TELAR ligado: varre a rede de casa (/24) e os aparelhos do Tailscale na porta do motor
-    // devolve pares "ip|nome"
-    public static List<string> ProcurarPCsForte()
+    // a conexão de rede usada agora é Wi-Fi? (aí o TELAR escolhe uma qualidade mais leve e estável)
+    public static bool WifiAgora()
     {
-        var alvos = new List<string>();
-        string meu = IpLocal();
-        if (meu != "") { string b = meu.Substring(0, meu.LastIndexOf('.') + 1); for (int i = 1; i < 255; i++) alvos.Add(b + i); }
-        if (File.Exists(App.TailscaleExe))
-            foreach (var l in Rodar(App.TailscaleExe, "status", 5000).Split('\n'))
-            {
-                var m = System.Text.RegularExpressions.Regex.Match(l, @"^\s*(100\.\d+\.\d+\.\d+)\s");
-                if (m.Success) alvos.Add(m.Groups[1].Value);
-            }
-        var achados = new List<string>();
-        var tarefas = alvos.Distinct().Select(ip => System.Threading.Tasks.Task.Factory.StartNew(() =>
+        try
         {
-            using (var c = new TcpClient())
+            string meu = IpLocal();
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
             {
-                try
-                {
-                    var r = c.BeginConnect(ip, 47989, null, null);
-                    if (!r.AsyncWaitHandle.WaitOne(600) || !c.Connected) return;
-                    c.EndConnect(r);
-                }
-                catch { return; }
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.GetIPProperties().UnicastAddresses.Any(a => a.Address.ToString() == meu))
+                    return ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
             }
+        }
+        catch { }
+        return false;
+    }
+
+    // endereço da rede de casa (não é Tailscale nem internet)
+    public static bool RedeDeCasa(string ip)
+    {
+        if (ip.StartsWith("::ffff:")) ip = ip.Substring(7);
+        IPAddress a; if (!IPAddress.TryParse(ip, out a) || a.AddressFamily != AddressFamily.InterNetwork) return false;
+        var b = a.GetAddressBytes();
+        return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] < 32) || (b[0] == 192 && b[1] == 168);
+    }
+
+    // código usado na rede de casa: sai da identidade do motor do PC Forte, então os dois lados chegam
+    // no mesmo número sem ninguém digitar nada. O PC Forte só aceita esse código de endereços da rede de casa.
+    public static string CodigoDaRede(string idMotor)
+    {
+        using (var h = SHA256.Create())
+        {
+            var b = h.ComputeHash(Encoding.UTF8.GetBytes("TELAR-rede-de-casa|" + idMotor.Trim().ToUpperInvariant()));
+            return (BitConverter.ToUInt32(b, 0) % 9000 + 1000).ToString();
+        }
+    }
+
+    // nome e identidade do motor de um PC Forte (null se não respondeu)
+    public static string[] InfoMotor(string ip, int timeoutMs)
+    {
+        try
+        {
+            var req = (HttpWebRequest)WebRequest.Create("http://" + ip + ":47989/serverinfo");
+            req.Timeout = timeoutMs; req.ReadWriteTimeout = timeoutMs; req.Proxy = null;
+            using (var r = req.GetResponse())
+            using (var s = new StreamReader(r.GetResponseStream(), Encoding.UTF8))
+            {
+                string xml = s.ReadToEnd();
+                var n = System.Text.RegularExpressions.Regex.Match(xml, "<hostname>([^<]*)</hostname>");
+                var u = System.Text.RegularExpressions.Regex.Match(xml, "<uniqueid>([^<]*)</uniqueid>");
+                return new[] { n.Success ? n.Groups[1].Value : ip, u.Success ? u.Groups[1].Value : "" };
+            }
+        }
+        catch { return null; }
+    }
+
+    static bool PortaAberta(string ip, int timeoutMs)
+    {
+        using (var c = new TcpClient())
+        {
             try
             {
-                var wc = new WebClient(); wc.Encoding = Encoding.UTF8;
-                string xml = wc.DownloadString("http://" + ip + ":47989/serverinfo");
-                var n = System.Text.RegularExpressions.Regex.Match(xml, "<hostname>([^<]*)</hostname>");
-                lock (achados) achados.Add(ip + "|" + (n.Success ? n.Groups[1].Value : ip));
+                var r = c.BeginConnect(ip, 47989, null, null);
+                if (!r.AsyncWaitHandle.WaitOne(timeoutMs) || !c.Connected) return false;
+                c.EndConnect(r); return true;
             }
-            catch { }
-        }, System.Threading.Tasks.TaskCreationOptions.LongRunning)).ToArray();
-        System.Threading.Tasks.Task.WaitAll(tarefas, 8000);
-        lock (achados) return achados.OrderBy(a => a.StartsWith("100.") ? 1 : 0).ToList();
+            catch { return false; }
+        }
+    }
+
+    // acha PCs Fortes com o TELAR ligado. completa = varre a rede de casa (/24) e os aparelhos do Tailscale;
+    // senão confere só os endereços já conhecidos (bem leve, para não pesar no Wi-Fi nem no PC da TV).
+    // devolve "ip|nome"
+    public static List<string> ProcurarPCsForte(IEnumerable<string> conhecidos, bool completa)
+    {
+        var alvos = new List<string>(conhecidos);
+        if (completa)
+        {
+            string meu = IpLocal();
+            if (meu != "") { string b = meu.Substring(0, meu.LastIndexOf('.') + 1); for (int i = 1; i < 255; i++) if (b + i != meu) alvos.Add(b + i); }
+            if (File.Exists(App.TailscaleExe))
+                foreach (var l in Rodar(App.TailscaleExe, "status", 5000).Split('\n'))
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(l, @"^\s*(100\.\d+\.\d+\.\d+)\s");
+                    if (m.Success) alvos.Add(m.Groups[1].Value);
+                }
+        }
+        var achados = new List<string>();
+        // poucos de cada vez: não abre centenas de conexões juntas
+        System.Threading.Tasks.Parallel.ForEach(alvos.Distinct().ToList(), new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = 24 }, ip =>
+        {
+            if (!PortaAberta(ip, ip.StartsWith("100.") ? 1200 : 400)) return;
+            var info = InfoMotor(ip, 2500);
+            if (info != null) lock (achados) achados.Add(ip + "|" + info[0]);
+        });
+        return achados.OrderBy(a => a.StartsWith("100.") ? 1 : 0).ToList();
     }
 
     public static string IpTailscale()
@@ -568,19 +645,38 @@ static class Motor
 
     // confirma os pedidos de conexão que estão esperando, com o código mostrado no PC Forte.
     // null = nenhum pedido; "" = conectou; outro texto = motivo da falha
+    static string codigoRede = "";
+    static string CodigoDaRedeDaqui()
+    {
+        if (codigoRede != "") return codigoRede;
+        var info = Util.InfoMotor("127.0.0.1", 3000);
+        if (info != null && info[1] != "") codigoRede = Util.CodigoDaRede(info[1]);
+        return codigoRede;
+    }
+
     public static string ConfirmarPedidos(string codigo)
     {
         try
         {
-            var pedidos = System.Text.RegularExpressions.Regex.Matches(Api("GET", null), "\"id\"\\s*:\\s*\"([^\"]+)\"");
+            // {"pairings":[{"address":"192.168.3.20","id":"...","name":"..."}]}
+            var pedidos = System.Text.RegularExpressions.Regex.Matches(Api("GET", null), "\\{[^{}]*\"id\"[^{}]*\\}");
             if (pedidos.Count == 0) return null;
-            bool algum = false;
+            bool algum = false, fora = false;
             foreach (System.Text.RegularExpressions.Match m in pedidos)
             {
-                string txt = Api("POST", "{\"pairing_id\":\"" + m.Groups[1].Value + "\",\"pin\":\"" + codigo + "\",\"name\":\"PC da TV\"}");
+                var id = System.Text.RegularExpressions.Regex.Match(m.Value, "\"id\"\\s*:\\s*\"([^\"]+)\"");
+                var end = System.Text.RegularExpressions.Regex.Match(m.Value, "\"address\"\\s*:\\s*\"([^\"]*)\"");
+                if (!id.Success) continue;
+                // na rede de casa entra direto, sem digitar nada; fora de casa precisa do código da tela
+                bool casa = end.Success && Util.RedeDeCasa(end.Groups[1].Value);
+                string pin = casa ? CodigoDaRedeDaqui() : codigo;
+                if (pin == "") continue;
+                if (!casa) fora = true;
+                string txt = Api("POST", "{\"pairing_id\":\"" + id.Groups[1].Value + "\",\"pin\":\"" + pin + "\",\"name\":\"PC da TV\"}");
                 if (txt.Replace(" ", "").Contains("\"status\":true")) algum = true;
             }
-            return algum ? "" : "Um PC da TV tentou conectar com o código errado. Confira o código e tente de novo.";
+            if (algum) return "";
+            return fora ? "Um PC de fora de casa tentou conectar com o código errado. Confira o código e tente de novo." : null;
         }
         catch (WebException e)
         {
@@ -729,15 +825,20 @@ class TelaForte : Casca
     bool motorOk, vigiando, reparando;
     List<string[]> aparelhos = new List<string[]>();
 
-    public TelaForte(Config c) : base("TELAR · PC Forte")
+    string ipTs = "", ipCasa = "";
+    bool driverControle;
+
+    public TelaForte(Config c, bool minimizado) : base("TELAR · PC Forte")
     {
         cfg = c;
-        Heroi("Este dispositivo", "----");
-        BotaoHeroi("", "No PC da TV, clique neste PC e digite este código. Este PC confirma sozinho.");
+        if (minimizado) WindowState = FormWindowState.Minimized;
+        Instalacao.IniciarComWindows();
+        Heroi("Código para fora de casa", "----");
+        BotaoHeroi("", "Na mesma rede o PC da TV conecta sozinho. Fora de casa (Tailscale) ele pede este código.");
         BotaoHeroi("", "Gerar outro código").Click += delegate { NovoCodigo(); };
-        MarcadorEndereco("Este é o PC Forte. Para jogar, use o TELAR no PC da TV e digite o código acima.");
+        MarcadorEndereco("Este é o PC Forte. Para jogar, abra o TELAR no PC da TV e clique neste PC.");
         tEndereco.ReadOnly = true; bConectar.Enabled = false;
-        Aviso("No PC da TV, clique neste PC e digite o código acima. Este PC confirma sozinho.", Cores.Laranja);
+        Aviso("No PC da TV, clique neste PC. Na mesma rede conecta sozinho, sem código. Deixe o TELAR aberto aqui (pode minimizar).", Cores.Laranja);
 
         AbaMudou += delegate { Redesenhar(); };
         AbrirMenu += delegate { MostrarMenu(); };
@@ -762,30 +863,31 @@ class TelaForte : Casca
     {
         motorOk = Motor.Instalado && Motor.Configurado && Motor.Ligado;
         Status(motorOk);
+        // o que é lento (Tailscale, driver, lista do motor) roda fora da janela, para ela nunca travar
         ThreadPool.QueueUserWorkItem(_ =>
         {
             var lista = motorOk ? Motor.ListarAparelhos() : new List<string[]>();
-            BeginInvoke((Action)(() => { aparelhos = lista; Redesenhar(); }));
+            string ts = Util.IpTailscale(), casa = Util.IpLocal();
+            bool controle = Util.Rodar("sc", "query ViGEmBus", 5000).Contains("ViGEmBus");
+            if (IsDisposed || !IsHandleCreated) return;
+            BeginInvoke((Action)(() => { aparelhos = lista; ipTs = ts; ipCasa = casa; driverControle = controle; Redesenhar(); }));
         });
         Redesenhar();
     }
 
     void Redesenhar()
     {
-        if (!cartoes.Visible) return;
+        if (!cartoes.Visible || IsDisposed) return;
         cartoes.SuspendLayout();
-        cartoes.Controls.Clear();
+        LimparCartoes();
         if (abaAtual == 0)
         {
             string motor = !Motor.Instalado ? "Não instalado" : !Motor.Configurado ? "Falta configurar" : Motor.Ligado ? "Ligado e pronto" : "Desligado";
             NovoCartao("Motor de transmissão", motor, motorOk ? "Tela, áudio e controles" : "Use Reparar motor", motorOk ? Cores.Verde : Cores.Vermelho,
                 motorOk ? Cartao.Desenho.Ok : Cartao.Desenho.Desligado).Click += delegate { Atualizar(); };
-            string ip = Util.IpLocal();
-            NovoCartao("Endereço em casa", ip == "" ? "sem rede" : ip, "O PC da TV acha sozinho", Cores.Cartoes[3], Cartao.Desenho.Rede);
-            string ts = Util.IpTailscale();
-            NovoCartao("Fora de casa", ts != "" ? ts : "opcional: Tailscale", "Acesso remoto para trabalho", Cores.Cartoes[4], Cartao.Desenho.Rede);
-            bool controle = Util.Rodar("sc", "query ViGEmBus", 5000).Contains("ViGEmBus");
-            NovoCartao("Controle", controle ? "Driver instalado" : "Driver ausente", "Xbox e PlayStation na TV", Cores.Cartoes[1], Cartao.Desenho.Controle);
+            NovoCartao("Endereço em casa", ipCasa == "" ? "..." : ipCasa, "Conecta sozinho, sem código", Cores.Cartoes[3], Cartao.Desenho.Rede);
+            NovoCartao("Fora de casa", ipTs != "" ? ipTs : "opcional: Tailscale", "Trabalho remoto · pede o código", Cores.Cartoes[4], Cartao.Desenho.Rede);
+            NovoCartao("Controle", driverControle ? "Driver instalado" : "Conferindo...", "Xbox e PlayStation na TV", Cores.Cartoes[1], Cartao.Desenho.Controle);
             NovoCartao("Aparelhos conectados", aparelhos.Count == 0 ? "nenhum ainda" : aparelhos.Count + (aparelhos.Count == 1 ? " PC da TV" : " PCs da TV"), "Ver ou desconectar", Cores.Cartoes[0], Cartao.Desenho.Pc)
                 .Click += delegate { EscolherAba(1); };
             NovoCartao("Reparar motor", reparando ? "Reparando..." : "Só se der problema", "Pede administrador", Color.FromArgb(78, 78, 78), Cartao.Desenho.Engrenagem)
@@ -803,7 +905,7 @@ class TelaForte : Casca
                     Atualizar();
                 };
             }
-            if (aparelhos.Count == 0) TextoVazio("Nenhum PC da TV conectado ainda. No PC da TV, clique neste PC e digite o código lá de cima.");
+            if (aparelhos.Count == 0) TextoVazio("Nenhum PC da TV conectado ainda. No PC da TV, abra o TELAR e clique neste PC (na mesma rede conecta sozinho).");
         }
         cartoes.ResumeLayout();
     }
@@ -827,7 +929,7 @@ class TelaForte : Casca
             var b = new byte[4]; r.GetBytes(b);
             codigo = (BitConverter.ToUInt32(b, 0) % 9000 + 1000).ToString();
         }
-        Heroi("Este dispositivo", codigo);
+        Heroi("Código para fora de casa", codigo);
     }
 
     // a cada 2 s confere se algum PC da TV pediu para conectar e confirma com o código mostrado
@@ -843,7 +945,7 @@ class TelaForte : Casca
             {
                 vigiando = false;
                 if (res == null) return; // ninguém pediu
-                if (res == "") { Aviso("PC da TV conectado às " + DateTime.Now.ToString("HH:mm") + ". Ele já pode jogar.", Cores.Verde); NovoCodigo(); Atualizar(); }
+                if (res == "") { Aviso("PC da TV conectado às " + DateTime.Now.ToString("HH:mm") + ". Ele já pode jogar.", Cores.Verde); Atualizar(); }
                 else Aviso(res, Cores.Vermelho);
             }));
         });

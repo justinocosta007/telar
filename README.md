@@ -17,9 +17,11 @@ Se o Windows mostrar "O Windows protegeu o computador", clique em **Mais informa
 ## Como usar
 
 1. Rode o instalador nos dois PCs. No PC da sala escolha **PC Forte**; no PC da TV escolha **PC da TV**.
-2. No PC da TV, o PC Forte aparece sozinho em **Computadores**.
-3. Clique nele e digite o **código de 4 números** que aparece no TELAR do PC Forte. Ele confirma sozinho.
-4. Escolha **Desktop** (a tela inteira) ou **Steam Big Picture** e jogue.
+2. No PC da TV, o PC Forte aparece sozinho em **Encontrados**.
+3. Clique nele. Na mesma rede **conecta sozinho, sem código**, e abre a tela inteira do PC Forte.
+4. Fora de casa (Tailscale) ele pede o **código de 4 números** que aparece no TELAR do PC Forte.
+
+O TELAR do PC Forte abre sozinho (minimizado) quando o Windows liga.
 
 Durante a transmissão: `Ctrl+Alt+Shift+Q` sai, `Ctrl+Alt+Shift+S` mostra as estatísticas, `Ctrl+Alt+Shift+Z` solta o mouse.
 
@@ -27,7 +29,8 @@ Durante a transmissão: `Ctrl+Alt+Shift+Q` sai, `Ctrl+Alt+Shift+S` mostra as est
 
 | Modo | Uso | Taxa de bits |
 |---|---|---|
-| Automático (padrão) | Quad HD 1440p 120 fps; cai para 60 fps se a TV não aceitar 120 Hz | ~75 Mbps |
+| Automático com cabo de rede | Quad HD 1440p 120 fps; cai para 60 fps se a TV não aceitar 120 Hz | ~75 Mbps |
+| Automático no Wi-Fi | Full HD 1080p 120 fps (estável no Wi-Fi 5 GHz); 60 fps em PC da TV bem simples | ~32 Mbps |
 | 4K 2160p 60 fps | opção em casa | 80 Mbps |
 | Modo trabalho | fora de casa pelo Tailscale, na resolução da sua tela, 60 fps | 8 a 15 Mbps |
 
