@@ -1,12 +1,17 @@
 ﻿// TELAR - PC da TV, no estilo AnyDesk: barra para digitar o endereço do PC Forte, "Este dispositivo",
-// abas Encontrados / Sessões Recentes / Favoritos com os PCs Fortes em cartões, e as Configurações.
+// abas Encontrados / Sessões Recentes / Favoritos com os PCs Fortes em cartões (Online / Offline), e as Configurações.
+// Não existe código: na rede de casa ou pelo Tailscale o clique no PC Forte já conecta sozinho.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Management;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -14,6 +19,7 @@ class PcInfo
 {
     public string Ip, Nome;
     public bool Online, Pareado, Ocupado, Favorito;
+    public bool Ligado; // o PC responde na rede, mas o motor do TELAR não (TELAR desligado nele)
     public long Ultimo; // última vez que jogou nele (ticks), para "Sessões Recentes"
 }
 
@@ -23,25 +29,33 @@ class TelaTV : Casca
     readonly Config cfg;
     Panel config;
     readonly List<PcInfo> lista = new List<PcInfo>();
-    // procura leve a cada 20 s (só os PCs conhecidos); a varredura da rede inteira só quando não achou nenhum, no máximo 1x por minuto
-    readonly System.Windows.Forms.Timer relogio = new System.Windows.Forms.Timer { Interval = 20000 };
+    // status dos PCs conhecidos a cada 10 s (bem leve: uma conexão por PC); a varredura da rede inteira
+    // só quando não achou nenhum, no máximo 1x por minuto. Parado enquanto joga.
+    readonly System.Windows.Forms.Timer relogio = new System.Windows.Forms.Timer { Interval = 10000 };
     bool procurando;
     DateTime ultimaCompleta = DateTime.MinValue;
     Process jogo; // receptor aberto: enquanto joga, o TELAR fica quieto para não roubar rede nem processador
+    DateTime inicioJogo;
     string desenhado = "";
-    static readonly Font fonteVazio = new Font("Segoe UI", 10.5f);
 
     static readonly Color Fundo = Cores.Fundo;
     static readonly Color Barra = Cores.Laranja;
+    static readonly Color Cinza = Color.FromArgb(150, 150, 150);
+    const string AvisoPadrao = "Clique num PC Forte para jogar.   Durante o jogo: Ctrl+Alt+Shift+Q sai  ·  Ctrl+Alt+Shift+Z solta o mouse  ·  Ctrl+Alt+Shift+S estatísticas";
+
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int c);
 
     public TelaTV(Config c) : base("TELAR · PC da TV")
     {
         cfg = c;
+        // da v9 em diante o automático já é Quad HD 1440p: quem tinha escolhido 1440p à mão volta para o automático
+        if (cfg.Get("tv.res") == "1440") { cfg.Set("tv.res", "auto"); cfg.Salvar(); }
         string ip = Util.IpLocal();
         Heroi("Este dispositivo", ip == "" ? "sem rede" : ip);
         BotaoHeroi("", "Como usar").Click += delegate { Ajuda(); };
         BotaoHeroi("", "Procurar PCs agora").Click += delegate { Procurar(); };
-        Aviso("Clique num PC Forte para jogar.   Durante o jogo: Ctrl+Alt+Shift+Q sai  ·  Ctrl+Alt+Shift+Z solta o mouse  ·  Ctrl+Alt+Shift+S estatísticas", Cores.Laranja);
+        Aviso(AvisoPadrao, Cores.Laranja);
         MarcadorEndereco("Digite o endereço remoto (IP do PC Forte)");
 
         foreach (var s in cfg.Get("tv.pcs").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
@@ -59,7 +73,7 @@ class TelaTV : Casca
 
         relogio.Tick += delegate
         {
-            if (Jogando || WindowState == FormWindowState.Minimized || cfg.Get("tv.procurar") == "0") return;
+            if (WindowState == FormWindowState.Minimized || cfg.Get("tv.procurar") == "0" || Jogando) return;
             bool algumOnline = lista.Any(p => p.Online);
             Procurar(!algumOnline && (DateTime.Now - ultimaCompleta).TotalSeconds >= 55);
         };
@@ -76,7 +90,7 @@ class TelaTV : Casca
 
     void Salvar()
     {
-        cfg.Set("tv.pcs", string.Join(";", lista.Select(p => p.Ip + "|" + p.Nome.Replace("|", " ").Replace(";", " ") + "|" + (p.Pareado ? "1" : "0") + "|" + (p.Favorito ? "1" : "0") + "|" + p.Ultimo).ToArray()));
+        cfg.Set("tv.pcs", string.Join(";", lista.Select(p => p.Ip + "|" + (p.Nome ?? p.Ip).Replace("|", " ").Replace(";", " ") + "|" + (p.Pareado ? "1" : "0") + "|" + (p.Favorito ? "1" : "0") + "|" + p.Ultimo).ToArray()));
         cfg.Salvar();
     }
 
@@ -90,9 +104,35 @@ class TelaTV : Casca
         m.Show(bMenu, new Point(bMenu.Width - m.Width, bMenu.Height));
     }
 
-    // ---------------- cartões dos PCs ----------------
-    bool Jogando { get { try { return jogo != null && !jogo.HasExited; } catch { return false; } } }
+    // ---------------- transmissão aberta ----------------
+    // tem transmissão aberta? (inclusive uma de antes de o TELAR reiniciar para se atualizar)
+    bool Jogando
+    {
+        get
+        {
+            try { if (jogo != null && !jogo.HasExited) return true; } catch { }
+            return Process.GetProcessesByName("telar-cliente").Length > 0 && ReceptorTransmitindo() != null;
+        }
+    }
 
+    static Process ReceptorTransmitindo()
+    {
+        try
+        {
+            using (var q = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='telar-cliente.exe'"))
+                foreach (ManagementObject o in q.Get())
+                    if (((o["CommandLine"] as string) ?? "").Contains(" stream ")) return Process.GetProcessById(Convert.ToInt32(o["ProcessId"]));
+        }
+        catch { }
+        return null;
+    }
+
+    static void TrazerParaFrente(Process p)
+    {
+        try { p.Refresh(); if (p.MainWindowHandle != IntPtr.Zero) { ShowWindow(p.MainWindowHandle, 9); SetForegroundWindow(p.MainWindowHandle); } } catch { }
+    }
+
+    // ---------------- cartões dos PCs ----------------
     void Redesenhar()
     {
         if (!cartoes.Visible || IsDisposed) return;
@@ -100,29 +140,37 @@ class TelaTV : Casca
         IEnumerable<PcInfo> quais =
             abaAtual == 1 ? lista.Where(p => p.Ultimo > 0).OrderByDescending(p => p.Ultimo) :
             abaAtual == 2 ? lista.Where(p => p.Favorito).OrderBy(p => p.Nome) :
-            lista.OrderByDescending(p => p.Online).ThenBy(p => p.Nome);
+            lista.OrderByDescending(p => p.Online).ThenByDescending(p => p.Ligado).ThenBy(p => p.Nome);
         quais = quais.ToList();
         // só refaz os cartões se algo mudou (refazer à toa deixava a janela pesada)
-        string marca = abaAtual + "|" + procurando + "|" + string.Join(";", quais.Select(p => p.Ip + p.Nome + p.Online + p.Pareado + p.Ocupado + p.Favorito).ToArray());
+        string marca = abaAtual + "|" + procurando + "|" + string.Join(";", quais.Select(p => p.Ip + p.Nome + p.Online + p.Ligado + p.Ocupado + p.Favorito).ToArray());
         if (marca == desenhado) return;
         desenhado = marca;
         cartoes.SuspendLayout();
         LimparCartoes();
         foreach (var pc in quais)
         {
-            string l1 = pc.Ocupado ? "Conectando..." : !pc.Online ? (procurando ? "Procurando..." : "Desligado ou fora da rede")
-                : pc.Ip.StartsWith("100.") ? (pc.Pareado ? "Fora de casa · modo trabalho" : "Fora de casa · precisa do código")
-                : "Na rede · clique para jogar";
+            string l1, selo; Color corSelo;
+            if (pc.Ocupado) { l1 = "Conectando..."; selo = "Conectando"; corSelo = Cores.Laranja; }
+            else if (pc.Online) { l1 = Util.Tailscale(pc.Ip) ? "Fora de casa · modo trabalho" : "Pronto · clique para jogar"; selo = "Online"; corSelo = Cores.Verde; }
+            else if (pc.Ligado) { l1 = "PC ligado, mas o TELAR não responde nele"; selo = "TELAR desligado"; corSelo = Cores.Laranja; }
+            else { l1 = procurando ? "Procurando..." : "Desligado ou fora da rede"; selo = "Offline"; corSelo = Cinza; }
             var c = NovoCartao(pc.Nome, l1, pc.Ip + (pc.Favorito ? "  ★" : ""), pc.Online ? Cores.DoNome(pc.Nome) : Color.FromArgb(78, 78, 78),
-                !pc.Online ? Cartao.Desenho.Desligado : pc.Pareado || Util.RedeDeCasa(pc.Ip) ? Cartao.Desenho.Pc : Cartao.Desenho.Cadeado);
+                pc.Online ? Cartao.Desenho.Pc : Cartao.Desenho.Desligado);
+            c.Selo = selo; c.CorSelo = corSelo;
             var info = pc;
-            c.Click += delegate { AbrirPC(info, "Desktop"); };
+            c.Click += delegate { AbrirPC(info, "Desktop", false); };
             var menu = new ContextMenuStrip();
-            menu.Items.Add("Jogar (tela inteira)", null, delegate { AbrirPC(info, "Desktop"); });
-            menu.Items.Add("Abrir Steam Big Picture", null, delegate { AbrirPC(info, "Steam Big Picture"); });
+            menu.Items.Add("Jogar (tela inteira)", null, delegate { AbrirPC(info, "Desktop", false); });
+            menu.Items.Add("Abrir Steam Big Picture", null, delegate { AbrirPC(info, "Steam Big Picture", false); });
             menu.Items.Add(info.Favorito ? "Tirar dos favoritos" : "Adicionar aos favoritos", null, delegate { info.Favorito = !info.Favorito; Salvar(); Redesenhar(); });
-            if (!Util.RedeDeCasa(info.Ip)) menu.Items.Add("Conectar de novo (código)", null, delegate { Parear(info); });
-            menu.Items.Add("Detalhes", null, delegate { MessageBox.Show(this, "Nome: " + info.Nome + "\nEndereço: " + info.Ip + "\nConectado (código aceito): " + (info.Pareado ? "sim" : "não") + "\nNa rede agora: " + (info.Online ? "sim" : "não"), "TELAR"); });
+            menu.Items.Add("Conectar de novo", null, delegate { AbrirPC(info, "Desktop", true); });
+            menu.Items.Add("Detalhes", null, delegate
+            {
+                string ultima = cfg.Get("tv.ultima");
+                MessageBox.Show(this, "Nome: " + info.Nome + "\nEndereço: " + info.Ip + "\nStatus: " + (info.Online ? "Online" : info.Ligado ? "ligado, mas o TELAR não responde nele" : "Offline") +
+                    (ultima != "" ? "\n\n" + ultima : ""), "TELAR");
+            });
             menu.Items.Add("Esquecer este PC", null, delegate { lista.Remove(info); Salvar(); Redesenhar(); });
             c.ContextMenuStrip = menu;
         }
@@ -132,11 +180,6 @@ class TelaTV : Casca
                        procurando ? "Procurando o PC Forte na rede..." :
                        "Nenhum PC Forte encontrado. Confira se o TELAR está instalado e ligado nele, ou digite o endereço lá em cima.");
         cartoes.ResumeLayout();
-    }
-
-    new void TextoVazio(string texto)
-    {
-        cartoes.Controls.Add(new Label { Text = texto, AutoSize = false, Size = new Size(640, 60), ForeColor = Cores.Apagado, Font = fonteVazio });
     }
 
     void Procurar() { Procurar(true); }
@@ -151,40 +194,29 @@ class TelaTV : Casca
         {
             List<string> achados;
             try { achados = Util.ProcurarPCsForte(conhecidos, completa); } catch { achados = new List<string>(); }
+            // os conhecidos que não responderam: o PC está desligado ou só o TELAR está desligado nele?
+            var ligados = new HashSet<string>();
+            try { foreach (var ip in conhecidos.Where(ip => !achados.Any(a => a.StartsWith(ip + "|")))) if (Util.Ligado(ip)) ligados.Add(ip); } catch { }
             if (IsDisposed || !IsHandleCreated) return;
-            BeginInvoke((Action)(() =>
+            try
             {
-                procurando = false;
-                foreach (var pc in lista) if (!pc.Ocupado) pc.Online = false;
-                foreach (var a in achados)
+                BeginInvoke((Action)(() =>
                 {
-                    var x = a.Split('|');
-                    var pc = lista.FirstOrDefault(p => p.Ip == x[0]);
-                    if (pc == null) { pc = new PcInfo { Ip = x[0] }; lista.Add(pc); }
-                    pc.Nome = x[1]; pc.Online = true;
-                }
-                Salvar();
-                Redesenhar();
-                ConferirPareamento();
-            }));
+                    procurando = false;
+                    foreach (var pc in lista) if (!pc.Ocupado) { pc.Online = false; pc.Ligado = ligados.Contains(pc.Ip); }
+                    foreach (var a in achados)
+                    {
+                        var x = a.Split('|');
+                        var pc = lista.FirstOrDefault(p => p.Ip == x[0]);
+                        if (pc == null) { pc = new PcInfo { Ip = x[0] }; lista.Add(pc); }
+                        pc.Nome = x[1]; pc.Online = true; pc.Ligado = true;
+                    }
+                    Salvar();
+                    Redesenhar();
+                }));
+            }
+            catch { procurando = false; }
         });
-    }
-
-    // confere uma vez por PC (em segundo plano) se ele já está pareado, para tirar o cadeado
-    readonly HashSet<string> conferidos = new HashSet<string>();
-    void ConferirPareamento()
-    {
-        // na rede de casa não precisa conferir: o clique já conecta sozinho
-        foreach (var pc in lista.Where(p => p.Online && !conferidos.Contains(p.Ip) && !Util.RedeDeCasa(p.Ip)).ToList())
-        {
-            conferidos.Add(pc.Ip);
-            var alvo = pc;
-            ThreadPool.QueueUserWorkItem(_ =>
-            {
-                string lixo; bool ok = Listar(alvo.Ip, out lixo) == 0;
-                BeginInvoke((Action)(() => { alvo.Pareado = ok; Salvar(); Redesenhar(); }));
-            });
-        }
     }
 
     void AdicionarManual()
@@ -199,74 +231,76 @@ class TelaTV : Casca
     {
         if (endereco == "") { Aviso("Digite o endereço do PC Forte (ex.: 192.168.0.10) e aperte Enter.", Cores.Laranja); return; }
         var pc = lista.FirstOrDefault(p => p.Ip == endereco);
-        if (pc == null) { pc = new PcInfo { Ip = endereco, Nome = endereco, Online = true }; lista.Add(pc); }
+        if (pc == null) { pc = new PcInfo { Ip = endereco, Nome = endereco }; lista.Add(pc); }
         Salvar(); Redesenhar();
-        if (jogar) AbrirPC(pc, "Desktop"); else Procurar();
+        if (jogar) AbrirPC(pc, "Desktop", false); else Procurar();
     }
 
-    // clicar num PC: se já está conectado abre direto. Na rede de casa conecta sozinho, sem código;
-    // só fora de casa (Tailscale) pede o código que aparece no PC Forte.
-    void AbrirPC(PcInfo pc, string app)
+    // clicar num PC: se já está conectado abre direto; se não, conecta sozinho (sem código) e abre.
+    void AbrirPC(PcInfo pc, string app, bool conectarDeNovo)
     {
-        if (pc.Ocupado || Jogando) return;
+        if (pc.Ocupado) return;
+        var aberto = ReceptorTransmitindo();
+        if (aberto != null) { TrazerParaFrente(aberto); Aviso("A transmissão já está aberta.   Ctrl+Alt+Shift+Q fecha.", Cores.Laranja); return; }
+        if (!Util.Confiavel(pc.Ip)) { Aviso("O TELAR conecta a PCs da sua rede de casa ou do seu Tailscale (endereço 100.x).", Cores.Vermelho); return; }
         pc.Ocupado = true; Redesenhar();
         Aviso("Conectando a " + pc.Nome + "...", Cores.Laranja);
         ThreadPool.QueueUserWorkItem(_ =>
         {
-            string saida; int c = Listar(pc.Ip, out saida);
-            bool casa = Util.RedeDeCasa(pc.Ip);
-            if (c != 0 && casa) c = ConectarNaRede(pc.Ip) ? 0 : c;
-            BeginInvoke((Action)(() =>
+            int c = conectarDeNovo ? -1 : Listar(pc.Ip);
+            if (c != 0) c = ConectarSozinho(pc.Ip) ? 0 : c;
+            bool ligado = c != 0 && Util.Ligado(pc.Ip);
+            if (IsDisposed || !IsHandleCreated) return;
+            try
             {
-                pc.Ocupado = false;
-                if (c == 0) { pc.Pareado = true; pc.Online = true; Salvar(); Redesenhar(); Jogar(pc, app); }
-                else
+                BeginInvoke((Action)(() =>
                 {
-                    pc.Pareado = false; Salvar(); Redesenhar();
-                    if (casa)
-                        Aviso("Não consegui conectar em " + pc.Nome + ". Confira se o TELAR está aberto no PC Forte (ele abre sozinho quando o PC liga) e tente de novo.", Cores.Vermelho);
-                    else if (Parear(pc)) Jogar(pc, app);
-                }
-            }));
+                    pc.Ocupado = false;
+                    if (c == 0) { pc.Pareado = true; pc.Online = true; pc.Ligado = true; Salvar(); Redesenhar(); Jogar(pc, app); return; }
+                    Salvar(); Redesenhar();
+                    Aviso("Não consegui conectar em " + pc.Nome + ". " +
+                        (pc.Online ? "Confira se o TELAR está ligado no PC Forte (ícone perto do relógio) e tente de novo." :
+                         ligado ? "O PC está ligado, mas o TELAR não respondeu nele." : "Ele parece desligado ou fora da rede."), Cores.Vermelho);
+                }));
+            }
+            catch { }
         });
     }
 
-    // conexão automática na rede de casa: os dois lados calculam o mesmo código, o PC Forte confirma sozinho
-    static bool ConectarNaRede(string ip)
+    // conexão sem código (rede de casa ou Tailscale): os dois lados calculam o mesmo número a partir da
+    // identidade do motor do PC Forte, e o TELAR de lá confirma sozinho em cerca de 3 segundos
+    static bool ConectarSozinho(string ip)
     {
         string[] info = null;
         for (int i = 0; i < 3 && (info == null || info[1] == ""); i++) { info = Util.InfoMotor(ip, 4000); if (info == null) Thread.Sleep(1000); }
         if (info == null || info[1] == "") return false;
         string pin = Util.CodigoDaRede(info[1]);
-        // até 3 tentativas: às vezes o primeiro pedido não chega a tempo no PC Forte (Wi-Fi acordando etc.)
-        for (int tentativa = 0; tentativa < 3; tentativa++)
+        for (int tentativa = 0; tentativa < 2; tentativa++)
         {
             Process p = null;
             try
             {
                 p = Receptor.Abrir("pair \"" + ip + "\" --pin " + pin, true);
-                var fim = DateTime.Now.AddSeconds(16);
-                Thread.Sleep(3000);
+                var fim = DateTime.Now.AddSeconds(12);
+                Thread.Sleep(2500);
                 while (DateTime.Now < fim)
                 {
-                    string lixo;
-                    if (Listar(ip, out lixo) == 0) return true;
+                    if (Listar(ip) == 0) return true;
                     if (p.HasExited) break;
-                    Thread.Sleep(2000);
+                    Thread.Sleep(1500);
                 }
             }
             catch { }
             finally { try { if (p != null && !p.HasExited) p.Kill(); } catch { } }
-            Thread.Sleep(1500);
-            string ultimo;
-            if (Listar(ip, out ultimo) == 0) return true;
+            Thread.Sleep(1000);
+            if (Listar(ip) == 0) return true;
         }
         return false;
     }
 
-    static int Listar(string ip, out string saida)
+    // 0 = este PC da TV já está conectado ao PC Forte desse endereço
+    static int Listar(string ip)
     {
-        saida = "";
         try
         {
             var psi = new ProcessStartInfo(App.ClienteExe, "list \"" + ip + "\"")
@@ -274,7 +308,7 @@ class TelaTV : Casca
             using (var p = Process.Start(psi))
             {
                 p.ErrorDataReceived += delegate { }; p.BeginErrorReadLine();
-                saida = p.StandardOutput.ReadToEnd();
+                p.StandardOutput.ReadToEnd();
                 if (!p.WaitForExit(20000)) { try { p.Kill(); } catch { } return -999; }
                 return p.ExitCode;
             }
@@ -286,25 +320,35 @@ class TelaTV : Casca
     {
         var plano = Plano(pc.Ip);
         pc.Ultimo = DateTime.Now.Ticks; Salvar();
-        Aviso("Abrindo " + pc.Nome + " em " + plano.Largura + "x" + plano.Altura + " a " + plano.Fps + " FPS" + (plano.Aviso != "" ? "  ·  " + plano.Aviso : "") + ".   Ctrl+Alt+Shift+Q volta para cá.", Cores.Laranja);
+        Aviso("Abrindo " + pc.Nome + " em " + plano.Largura + "x" + plano.Altura + " a " + plano.Fps + " FPS, " + (plano.Kbps / 1000) + " Mbps" + (plano.Aviso != "" ? "  ·  " + plano.Aviso : "") + ".   Ctrl+Alt+Shift+Q volta para cá.", Cores.Laranja);
         relogio.Stop();
         try
         {
+            inicioJogo = DateTime.Now;
             jogo = Receptor.Abrir(Argumentos(pc.Ip, app, plano, cfg), false);
             jogo.EnableRaisingEvents = true;
             // o receptor mais rápido que o normal; o TELAR minimizado e parado até o jogo fechar
             try { jogo.PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
+            DateTime desde = inicioJogo;
             jogo.Exited += delegate
             {
                 if (IsDisposed) return;
-                BeginInvoke((Action)(() =>
+                // o que a TV recebeu de verdade (resolução, FPS, perdas), lido no registro do receptor
+                var resumo = ResumoUltimaTransmissao(desde);
+                try
                 {
-                    jogo = null;
-                    if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
-                    Activate();
-                    Aviso("Clique num PC Forte para jogar.   Durante o jogo: Ctrl+Alt+Shift+Q sai  ·  Ctrl+Alt+Shift+Z solta o mouse  ·  Ctrl+Alt+Shift+S estatísticas", Cores.Laranja);
-                    relogio.Start();
-                }));
+                    BeginInvoke((Action)(() =>
+                    {
+                        jogo = null;
+                        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+                        Activate();
+                        if (resumo != null) { cfg.Set("tv.ultima", resumo[0]); cfg.Salvar(); Aviso(resumo[0], resumo[1] == "1" ? Cores.Verde : Cores.Laranja); }
+                        else Aviso(AvisoPadrao, Cores.Laranja);
+                        relogio.Start();
+                        Procurar(false);
+                    }));
+                }
+                catch { }
             };
             WindowState = FormWindowState.Minimized;
         }
@@ -315,67 +359,51 @@ class TelaTV : Casca
         }
     }
 
-    // ---------------- pareamento ----------------
-    // conectar: a pessoa digita aqui o código que aparece no TELAR do PC Forte; o PC Forte confirma sozinho
-    bool Parear(PcInfo pc)
+    // o receptor grava um registro na pasta dele cada vez que abre; o da transmissão diz a resolução e os FPS que
+    // chegaram aqui de verdade e quantos quadros se perderam. Devolve { texto, "1" se ficou bom }.
+    static string[] ResumoUltimaTransmissao(DateTime desde)
     {
-        var f = new Form { Text = "Conectar com " + pc.Nome, BackColor = Fundo, ForeColor = Color.White, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(460, 320), Font = Font };
-        f.Controls.Add(new Label { Text = "Digite o código que aparece no TELAR do PC Forte:", ForeColor = Color.FromArgb(200, 200, 200), Bounds = new Rectangle(24, 20, 420, 24) });
-        var tCod = new TextBox { MaxLength = 4, Font = new Font("Segoe UI Semibold", 40f), BackColor = Color.FromArgb(70, 70, 70), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, TextAlign = HorizontalAlignment.Center, Bounds = new Rectangle(24, 52, 412, 90) };
-        f.Controls.Add(tCod);
-        var st = new Label { Text = "O TELAR precisa estar aberto no PC Forte.", ForeColor = Color.FromArgb(200, 200, 200), Bounds = new Rectangle(24, 156, 420, 60) };
-        f.Controls.Add(st);
-        var ok = new Button { Text = "Conectar", FlatStyle = FlatStyle.Flat, BackColor = Barra, ForeColor = Color.White, Bounds = new Rectangle(24, 256, 412, 44), Font = new Font("Segoe UI Semibold", 11f) };
-        ok.FlatAppearance.BorderSize = 0; f.Controls.Add(ok); f.AcceptButton = ok;
-        tCod.KeyPress += (s, e) => { if (!char.IsDigit(e.KeyChar) && !char.IsControl(e.KeyChar)) e.Handled = true; };
-
-        Process p = null;
-        var tm = new System.Windows.Forms.Timer { Interval = 2000 };
-        bool conferindo = false, pareado = false;
-        DateTime inicio = DateTime.Now;
-        ok.Click += delegate
+        try
         {
-            if (pareado) { f.Close(); return; }
-            if (p != null) return;
-            if (tCod.Text.Length != 4) { st.ForeColor = Color.FromArgb(240, 120, 110); st.Text = "O código tem 4 números."; return; }
-            p = Receptor.Abrir("pair \"" + pc.Ip + "\" --pin " + tCod.Text, true);
-            inicio = DateTime.Now; tCod.Enabled = false; ok.Enabled = false;
-            st.ForeColor = Color.FromArgb(200, 200, 200); st.Text = "Conectando...";
-            tm.Start();
-        };
-        // o receptor continua aberto depois de parear; por isso confere a cada 2 s se já está pareado
-        tm.Tick += delegate
-        {
-            if (conferindo || p == null) return;
-            conferindo = true;
-            ThreadPool.QueueUserWorkItem(_ =>
+            var arqs = new DirectoryInfo(Path.GetDirectoryName(App.ClienteExe)).GetFiles("Moonlight-*.log").OrderByDescending(f => f.LastWriteTime).ToList();
+            foreach (var velho in arqs.Skip(30)) try { velho.Delete(); } catch { } // o receptor cria um por vez que abre
+            foreach (var f in arqs.Take(12))
             {
-                string lixo; bool deu = Listar(pc.Ip, out lixo) == 0;
-                f.BeginInvoke((Action)(() =>
+                if (f.LastWriteTime < desde.AddSeconds(-5)) break;
+                string txt;
+                using (var fs = new FileStream(f.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (var r = new StreamReader(fs)) txt = r.ReadToEnd();
+                var v = Regex.Match(txt, @"Video stream is (\d+)x(\d+)x(\d+)");
+                if (!v.Success) continue;
+                Func<string, double> N = padrao =>
                 {
-                    conferindo = false;
-                    bool desistir = p.HasExited || (DateTime.Now - inicio).TotalSeconds > 40;
-                    if (!deu && !desistir) return;
-                    tm.Stop();
-                    if (!p.HasExited) try { p.Kill(); } catch { }
-                    pareado = deu;
-                    st.ForeColor = deu ? Color.FromArgb(90, 210, 130) : Color.FromArgb(240, 120, 110);
-                    st.Text = deu ? "Conectado. Pode jogar." : "Não conectou. Confira o código no PC Forte (ele precisa estar com o TELAR aberto) e tente de novo.";
-                    ok.Text = deu ? "Ver apps" : "Tentar de novo"; ok.Enabled = true;
-                    if (!deu) { p = null; tCod.Enabled = true; tCod.SelectAll(); tCod.Focus(); }
-                }));
-            });
-        };
-        f.FormClosed += delegate { tm.Stop(); if (p != null && !p.HasExited) try { p.Kill(); } catch { } };
-        f.ShowDialog(this);
-        pc.Pareado = pareado; Salvar(); Redesenhar();
-        return pareado;
+                    var m = Regex.Match(txt, padrao); double d;
+                    return m.Success && double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out d) ? d : -1;
+                };
+                double fps = N(@"Rendering frame rate: ([\d.]+) FPS"), rede = N(@"Frames dropped by your network connection: ([\d.]+)%"),
+                       ritmo = N(@"Frames dropped due to network jitter: ([\d.]+)%"), lat = N(@"Average network latency: (\d+) ms"),
+                       dec = N(@"Average decoding time: ([\d.]+) ms");
+                int pedido = int.Parse(v.Groups[3].Value);
+                string s = "Última transmissão: " + v.Groups[1].Value + "x" + v.Groups[2].Value + " a " + (fps >= 0 ? fps.ToString("0") : pedido.ToString()) + " FPS";
+                double perdidos = Math.Max(0, rede) + Math.Max(0, ritmo);
+                if (rede >= 0) s += "  ·  quadros perdidos " + perdidos.ToString("0.0") + "%";
+                if (lat >= 0) s += "  ·  rede " + lat.ToString("0") + " ms";
+                if (dec >= 0) s += "  ·  decodificação " + dec.ToString("0.0") + " ms";
+                bool bom = (fps < 0 || fps >= pedido * 0.95) && perdidos < 1.5;
+                if (!bom) s += perdidos >= 1.5 ? "  ·  o Wi-Fi perdeu quadros: use a rede 5 GHz perto do roteador ou diminua a taxa nas Configurações"
+                                               : "  ·  este PC não acompanhou o FPS: tente 60 FPS nas Configurações";
+                return new[] { s, bom ? "1" : "0" };
+            }
+        }
+        catch { }
+        return null;
     }
 
     // ---------------- plano de transmissão ----------------
-    public class PlanoTx { public int Largura, Altura, Fps, Kbps; public bool Fora; public string Aviso = ""; }
+    public class PlanoTx { public int Largura, Altura, Fps, Kbps; public bool Fora, Wifi; public string Aviso = ""; }
 
-    PlanoTx Plano(string ip) { return Resolver(ip, cfg, Tela.Atual()[2], Util.WifiAgora()); }
+    // em tela cheia o receptor muda a TV para a taxa de atualização do FPS (ex.: 120 Hz), então vale a maior que ela aceita
+    PlanoTx Plano(string ip) { return Resolver(ip, cfg, G("exibicao", "fullscreen") == "fullscreen" ? Tela.MaxHz() : Tela.Atual()[2], Util.WifiAgora()); }
 
     // PC da TV simples (poucos núcleos) decodifica 1440p 120 com dificuldade e trava tudo
     public static bool PcFraco { get { return Environment.ProcessorCount <= 4; } }
@@ -384,11 +412,10 @@ class TelaTV : Casca
     public static PlanoTx Resolver(string ip, Config cfg, int hz, bool wifi)
     {
         Func<string, string, string> G = (k, d) => { string v = cfg.Get("tv." + k); return v == "" ? d : v; };
-        var p = new PlanoTx { Fora = ip.StartsWith("100.") && G("foraAuto", "1") == "1" };
+        var p = new PlanoTx { Fora = Util.Tailscale(ip) && G("foraAuto", "1") == "1", Wifi = wifi };
         string res = G("res", "auto"), fps = G("fps", "auto");
-        // em casa o automático manda sempre pelo menos Quad HD 1440p (a resolução nativa do PC Forte: sem reduzir
-        // a imagem lá e ampliar de novo aqui, que é o que deixava borrado). No Wi-Fi a taxa fica um pouco menor;
-        // num PC da TV bem simples vai a 60 FPS, senão ele não dá conta de decodificar e trava tudo
+        // em casa o automático manda sempre Quad HD 1440p (a resolução nativa do PC Forte: sem reduzir a imagem lá
+        // e ampliar de novo aqui, que é o que deixava borrado); num PC da TV bem simples vai a 60 FPS
         bool so60 = !p.Fora && PcFraco;
         // fora de casa é acesso remoto para trabalho: usa a resolução da tela daqui (texto nítido, sem escala)
         int alturaTela = Tela.Atual()[1];
@@ -428,13 +455,15 @@ class TelaTV : Casca
         var a = new StringBuilder();
         a.AppendFormat("stream \"{0}\" \"{1}\" --resolution {2}x{3} --fps {4} --bitrate {5}", ip, app, p.Largura, p.Altura, p.Fps, p.Kbps);
         a.Append(" --display-mode " + G("exibicao", "fullscreen"));
-        bool vsync = B("vsync", false), ritmo = B("ritmo", false);
+        // V-Sync ligado: imagem sem rasgos na TV. Ritmo do quadro no Wi-Fi: segura um quadro para a imagem
+        // andar lisinha mesmo quando o Wi-Fi atrasa um pacote
+        bool vsync = B("vsync", true), ritmo = B("ritmo", p.Wifi);
         bool mouseRemoto = B("mouseRemoto", false), yuv444 = B("yuv444", false);
         // fora de casa = trabalho remoto: imagem suave na internet, mouse de área de trabalho
         // e cores 4:4:4 (texto mais nítido) quando a placa do PC Forte suportar
         if (p.Fora) { vsync = true; ritmo = true; mouseRemoto = true; yuv444 = true; }
         a.Append(vsync ? " --vsync" : " --no-vsync");
-        a.Append(ritmo ? " --frame-pacing" : " --no-frame-pacing");
+        a.Append(vsync && ritmo ? " --frame-pacing" : " --no-frame-pacing");
         a.Append(B("hdr", false) ? " --hdr" : " --no-hdr");
         a.Append(" --audio-config " + G("audio", "stereo"));
         a.Append(B("silenciarHost", true) ? " --no-audio-on-host" : " --audio-on-host");
@@ -470,14 +499,15 @@ class TelaTV : Casca
         int largura = Math.Max(380, (ClientSize.Width - 60) / 2);
         config.Resize += delegate { int w = Math.Max(380, (config.ClientSize.Width - 60) / 2); foreach (Control s in esq.Controls.Cast<Control>().Concat(dir.Controls.Cast<Control>())) s.Width = w; };
 
-        int hz = Tela.Atual()[2];
+        int hz = Tela.MaxHz();
+        bool wifi = Util.WifiAgora();
 
         // Configurações Básicas
         var s1 = Secao(esq, "Configurações Básicas", largura);
         Rotulo(s1, "Resolução e FPS", 11f, Color.White);
-        Rotulo(s1, "Valores muito altos para o seu PC ou rede podem causar atraso, engasgos ou erros. Esta TV está em " + hz + " Hz.", 8.5f, Color.FromArgb(190, 190, 190));
+        Rotulo(s1, "Valores muito altos para o seu PC ou rede podem causar atraso, engasgos ou erros. Esta TV aceita até " + hz + " Hz" + (wifi ? " · conectado pelo Wi-Fi" : " · conectado pelo cabo") + ".", 8.5f, Color.FromArgb(190, 190, 190));
         var linha = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 4) };
-        var cRes = Combo(linha, "res", new[] { "auto|Automático (Quad HD 1440p)", "720|720p", "1080|1080p", "1440|1440p", "2160|4K" }, "auto", 190);
+        var cRes = Combo(linha, "res", new[] { "auto|Automático (Quad HD 1440p)", "720|720p", "1080|1080p", "1440|1440p", "2160|4K" }, "auto", 210);
         var cFps = Combo(linha, "fps", new[] { "auto|Automático (120, ou 60)", "30|30 FPS", "60|60 FPS", "90|90 FPS", "120|120 FPS", "144|144 FPS" }, "auto", 210);
         s1.Controls.Add(linha);
         var lBit = Rotulo(s1, "", 10f, Color.White);
@@ -489,14 +519,14 @@ class TelaTV : Casca
         s1.Controls.Add(linhaBit);
         Action atualizarBit = () =>
         {
-            var p = Resolver("192.168.0.1", cfg, hz, Util.WifiAgora());
+            var p = Resolver("192.168.0.1", cfg, hz, wifi);
             int v = p.Kbps / 1000;
             trilha.Value = Math.Max(trilha.Minimum, Math.Min(trilha.Maximum, v));
-            lBit.Text = "Taxa de bits de vídeo: " + v + " Mbps" + (G("bitrate", "auto") == "auto" ? " (automático para " + p.Altura + "p " + p.Fps + " FPS)" : "") + (p.Aviso != "" ? "  ·  " + p.Aviso : "");
+            lBit.Text = "Taxa de bits de vídeo: " + v + " Mbps" + (G("bitrate", "auto") == "auto" ? " (automático para " + p.Altura + "p " + p.Fps + " FPS" + (wifi ? " no Wi-Fi" : "") + ")" : "") + (p.Aviso != "" ? "  ·  " + p.Aviso : "");
         };
         bool mexendo = false;
         trilha.Scroll += delegate { mexendo = true; cfg.Set("tv.bitrate", (trilha.Value * 1000).ToString()); atualizarBit(); mexendo = false; };
-        bAuto.Click += delegate { cfg.Set("tv.bitrate", "auto"); atualizarBit(); };
+        bAuto.Click += delegate { cfg.Set("tv.bitrate", "auto"); cfg.Salvar(); atualizarBit(); };
         cRes.SelectedIndexChanged += delegate { if (!mexendo) atualizarBit(); };
         cFps.SelectedIndexChanged += delegate { if (!mexendo) atualizarBit(); };
         atualizarBit();
@@ -504,10 +534,10 @@ class TelaTV : Casca
         var lm = new FlowLayoutPanel { AutoSize = true }; s1.Controls.Add(lm);
         Combo(lm, "exibicao", new[] { "fullscreen|Tela cheia (Recomendado)", "borderless|Janela sem bordas", "windowed|Janela" }, "fullscreen", 230);
         var l2 = new FlowLayoutPanel { AutoSize = true }; s1.Controls.Add(l2);
-        Check(l2, "vsync", "Sincronização vertical", false);
-        Check(l2, "ritmo", "Ritmo do quadro", false);
+        Check(l2, "vsync", "Sincronização vertical", true);
+        Check(l2, "ritmo", "Ritmo do quadro", wifi);
         Check(s1, "hdr", "Habilitar HDR", false);
-        Rotulo(s1, "Em casa o TELAR deixa os dois desligados para o menor atraso. Fora de casa liga os dois.", 8.5f, Color.FromArgb(190, 190, 190));
+        Rotulo(s1, "Sincronização vertical: imagem sem rasgos na TV. Ritmo do quadro: imagem mais lisa no Wi-Fi (o TELAR liga sozinho quando a TV está no Wi-Fi).", 8.5f, Color.FromArgb(190, 190, 190));
 
         // Áudio
         var s2 = Secao(esq, "Configurações de Áudio", largura);
@@ -607,13 +637,12 @@ class TelaTV : Casca
     {
         MessageBox.Show(this,
             "Como usar o TELAR na TV:\n\n" +
-            "1. Instale o TELAR no PC Forte (opção PC Forte) e deixe ele ligado.\n" +
-            "2. Aqui, o PC Forte aparece sozinho em Computadores. Se não aparecer, clique em + e digite o IP mostrado no PC Forte.\n" +
-            "3. Clique no PC Forte. Na mesma rede ele conecta sozinho, sem código.\n" +
-            "4. Fora de casa (Tailscale) ele pede o código que aparece no TELAR do PC Forte.\n\n" +
-            "O automático usa Quad HD 1440p a 120 FPS. No Wi-Fi use a rede de 5 GHz, perto do roteador.\n\n" +
+            "1. Instale o TELAR no PC Forte (opção PC Forte). Ele fica ligado perto do relógio e abre sozinho com o Windows.\n" +
+            "2. Aqui o PC Forte aparece sozinho em Encontrados, com o status Online ou Offline. Se não aparecer, digite o IP dele lá em cima.\n" +
+            "3. Clique no PC Forte: conecta sozinho, sem código, e abre a tela inteira dele.\n\n" +
+            "Qualidade automática: Quad HD 1440p a 120 FPS (no Wi-Fi use a rede 5 GHz). Ao fechar, o TELAR mostra a resolução e o FPS que chegaram aqui.\n\n" +
             "Durante o jogo: Ctrl+Alt+Shift+Q sai, Ctrl+Alt+Shift+S mostra as estatísticas, Ctrl+Alt+Shift+Z solta o mouse.\n" +
-            "Fora de casa (acesso remoto para trabalho): instale o Tailscale nos dois PCs e use o IP 100.x do PC Forte. O TELAR entra sozinho no modo trabalho.",
+            "Fora de casa (trabalho): instale o Tailscale nos dois PCs e use o IP 100.x do PC Forte. Também conecta sozinho.",
             "Ajuda do TELAR");
     }
 }

@@ -38,7 +38,11 @@ class Cartao : Control
     public Desenho Icone = Desenho.Nenhum;
     public Color Cor = Cores.Laranja;
     public string Titulo = "", Linha1 = "", Linha2 = "";
+    // selo no canto (ex.: "Online" com bolinha verde, "Offline" com bolinha cinza)
+    public string Selo = "";
+    public Color CorSelo = Cores.Verde;
     bool sobre;
+    static readonly Font fonteTitulo = new Font("Segoe UI Semibold", 10.5f), fonteLinha = new Font("Segoe UI", 9f), fonteSelo = new Font("Segoe UI Semibold", 8f);
 
     public Cartao()
     {
@@ -55,15 +59,30 @@ class Cartao : Control
         using (var fundo = new LinearGradientBrush(ClientRectangle, c1, ControlPaint.Dark(c1, 0.12f), 135f)) g.FillRectangle(fundo, ClientRectangle);
         using (var branco = new SolidBrush(Color.White))
         using (var claro = new SolidBrush(Color.FromArgb(225, 255, 255, 255)))
-        using (var f1 = new Font("Segoe UI Semibold", 10.5f))
-        using (var f2 = new Font("Segoe UI", 9f))
+        using (var fmt = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
         {
-            var fmt = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
-            g.DrawString(Titulo, f1, branco, new RectangleF(12, 12, Width - 24, 22), fmt);
-            g.DrawString(Linha1, f2, claro, new RectangleF(12, 36, Width - 24, 18), fmt);
-            g.DrawString(Linha2, f2, claro, new RectangleF(12, 54, Width - 24, 18), fmt);
+            g.DrawString(Titulo, fonteTitulo, branco, new RectangleF(12, 12, Width - 24, 22), fmt);
+            g.DrawString(Linha1, fonteLinha, claro, new RectangleF(12, 36, Width - 24, 18), fmt);
+            g.DrawString(Linha2, fonteLinha, claro, new RectangleF(12, 54, Width - 24, 18), fmt);
             DesenharIcone(g, new RectangleF(Width - 70, Height - 62, 56, 48));
+            if (Selo != "") DesenharSelo(g, branco);
         }
+    }
+
+    // pílula escura no canto de baixo à esquerda: bolinha colorida + texto (Online / Offline / ...)
+    void DesenharSelo(Graphics g, Brush texto)
+    {
+        var tam = g.MeasureString(Selo, fonteSelo);
+        var r = new RectangleF(10, Height - 32, tam.Width + 26, 22);
+        using (var fundo = new SolidBrush(Color.FromArgb(120, 0, 0, 0)))
+        using (var p = new GraphicsPath())
+        {
+            float d = r.Height;
+            p.AddArc(r.X, r.Y, d, d, 90, 180); p.AddArc(r.Right - d, r.Y, d, d, 270, 180); p.CloseFigure();
+            g.FillPath(fundo, p);
+        }
+        using (var bola = new SolidBrush(CorSelo)) g.FillEllipse(bola, r.X + 8, r.Y + 7, 8, 8);
+        g.DrawString(Selo, fonteSelo, texto, r.X + 19, r.Y + 4);
     }
 
     void DesenharIcone(Graphics g, RectangleF r)
@@ -254,10 +273,11 @@ class Casca : Form
         for (int k = 0; k < rotulosAbas.Count; k++)
         {
             rotulosAbas[k].ForeColor = k == i ? Cores.Laranja : Cores.Apagado;
-            rotulosAbas[k].Font = new Font(k == i ? "Segoe UI Semibold" : "Segoe UI", 10f);
+            rotulosAbas[k].Font = k == i ? fonteAbaAtiva : fonteAba;
         }
         if (AbaMudou != null) AbaMudou(i);
     }
+    static readonly Font fonteAba = new Font("Segoe UI", 10f), fonteAbaAtiva = new Font("Segoe UI Semibold", 10f), fonteVazio = new Font("Segoe UI", 10.5f);
 
     // apaga os cartões antigos liberando a memória deles (sem isso a janela fica cada vez mais pesada)
     protected void LimparCartoes()
@@ -274,7 +294,7 @@ class Casca : Form
     }
     protected void TextoVazio(string texto)
     {
-        cartoes.Controls.Add(new Label { Text = texto, AutoSize = false, Size = new Size(640, 60), ForeColor = Cores.Apagado, Font = new Font("Segoe UI", 10.5f) });
+        cartoes.Controls.Add(new Label { Text = texto, AutoSize = false, Size = new Size(640, 60), ForeColor = Cores.Apagado, Font = fonteVazio });
     }
 
     // páginas extras (ex.: Configurações) ocupam o lugar do "Este dispositivo" e das abas

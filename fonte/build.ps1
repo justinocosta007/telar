@@ -44,7 +44,7 @@ $w.Write($png); $w.Flush()
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 & $csc /nologo /target:winexe /optimize+ /codepage:65001 "/out:$root\TELAR.exe" "/win32icon:$src\TELAR.ico" `
   /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:System.ServiceProcess.dll `
-  /r:System.Security.dll /r:Microsoft.CSharp.dll /r:System.Core.dll "$src\Telar.cs" "$src\Visual.cs" "$src\TelaTV.cs"
+  /r:System.Security.dll /r:Microsoft.CSharp.dll /r:System.Core.dll /r:System.Web.Extensions.dll "$src\Telar.cs" "$src\Visual.cs" "$src\TelaTV.cs"
 if ($LASTEXITCODE -ne 0) { throw "Falha ao compilar" }
 "OK: $root\TELAR.exe"
 
@@ -68,7 +68,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 & $csc /nologo /target:winexe /optimize+ /codepage:65001 /main:Setup "/out:$root\TELAR-Setup.exe" "/win32icon:$src\TELAR.ico" "/win32manifest:$src\setup.manifest" `
   "/resource:$payload,payload.zip" `
   /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:System.ServiceProcess.dll `
-  /r:System.Security.dll /r:Microsoft.CSharp.dll /r:System.Core.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll "$src\Telar.cs" "$src\Visual.cs" "$src\TelaTV.cs" "$src\Setup.cs"
+  /r:System.Security.dll /r:Microsoft.CSharp.dll /r:System.Core.dll /r:System.Web.Extensions.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll "$src\Telar.cs" "$src\Visual.cs" "$src\TelaTV.cs" "$src\Setup.cs"
 if ($LASTEXITCODE -ne 0) { throw "Falha ao compilar o instalador" }
 "OK: $root\TELAR-Setup.exe ($([math]::Round((Get-Item "$root\TELAR-Setup.exe").Length/1MB,1)) MB)"
 

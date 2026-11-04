@@ -17,11 +17,11 @@ Se o Windows mostrar "O Windows protegeu o computador", clique em **Mais informa
 ## Como usar
 
 1. Rode o instalador nos dois PCs. No PC da sala escolha **PC Forte**; no PC da TV escolha **PC da TV**.
-2. No PC da TV, o PC Forte aparece sozinho em **Encontrados**.
-3. Clique nele. Na mesma rede **conecta sozinho, sem código**, e abre a tela inteira do PC Forte.
-4. Fora de casa (Tailscale) ele pede o **código de 4 números** que aparece no TELAR do PC Forte.
+2. No PC da TV, o PC Forte aparece sozinho em **Encontrados**, com o status **Online**, **Offline** ou **TELAR desligado** (PC ligado, mas o TELAR fechado nele).
+3. Clique nele: **conecta sozinho, sem código**, e abre a tela inteira do PC Forte. Vale na mesma rede e fora de casa pelo Tailscale.
+4. Ao fechar, o TELAR mostra o que chegou na TV de verdade: resolução, FPS, quadros perdidos, atraso da rede e tempo de decodificação.
 
-O TELAR do PC Forte abre sozinho (minimizado) quando o Windows liga.
+O TELAR do PC Forte abre sozinho quando o Windows liga e fica perto do relógio (fechar a janela não desliga ele). Por ali dá para **encerrar a transmissão** sem desconectar a TV.
 
 Durante a transmissão: `Ctrl+Alt+Shift+Q` sai, `Ctrl+Alt+Shift+S` mostra as estatísticas, `Ctrl+Alt+Shift+Z` solta o mouse.
 
@@ -33,6 +33,8 @@ Durante a transmissão: `Ctrl+Alt+Shift+Q` sai, `Ctrl+Alt+Shift+S` mostra as est
 | Automático no Wi-Fi | Quad HD 1440p 120 fps (use o Wi-Fi 5 GHz); 60 fps em PC da TV bem simples | 50 Mbps |
 | 4K 2160p 60 fps | opção em casa | 80 Mbps |
 | Modo trabalho | fora de casa pelo Tailscale, na resolução da sua tela, 60 fps | 8 a 15 Mbps |
+
+Durante a transmissão a tela do PC Forte acompanha o FPS da TV (ex.: 144 Hz vira 120 Hz e volta depois), para os quadros saírem em ritmo certinho. A TV usa V-Sync (sem rasgos) e, no Wi-Fi, o ritmo do quadro (imagem mais lisa). Cada quadro tem tamanho limitado, para uma troca brusca de cena não virar engasgo no Wi-Fi.
 
 Todas as opções (resolução, FPS, taxa de bits, V-Sync, HDR, áudio, mouse, controle, codec) ficam em **Configurações** no PC da TV.
 
