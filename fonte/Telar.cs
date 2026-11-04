@@ -23,7 +23,7 @@ using System.Windows.Forms;
 
 static class App
 {
-    public const int Versao = 7;
+    public const int Versao = 8;
     public const string SiteUrl = "https://justinocosta007.github.io/telar/";
     public static readonly string Pasta = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TELAR");
     public static readonly string PastaPrograma = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "TELAR");
@@ -490,8 +490,8 @@ static class Motor
                 foreach (ManagementObject o in q.Get()) gpus += o["Name"] + "; ";
             var ajustes = new List<KeyValuePair<string, string>>();
             Action<string, string> A = (k, v) => ajustes.Add(new KeyValuePair<string, string>(k, v));
-            if (gpus.Contains("NVIDIA")) { A("encoder", "nvenc"); A("nvenc_preset", "1"); A("nvenc_twopass", "quarter_res"); resumo.Add("Placa: NVIDIA (NVENC, latência mínima)"); }
-            else if (gpus.Contains("Radeon") || gpus.Contains("AMD")) { A("encoder", "amdvce"); A("amd_usage", "ultralowlatency"); A("amd_rc", "cbr"); A("amd_quality", "speed"); A("amd_vbaq", "enabled"); resumo.Add("Placa: AMD (AMF, ultra baixa latência)"); }
+            if (gpus.Contains("NVIDIA")) { A("encoder", "nvenc"); A("nvenc_preset", "2"); A("nvenc_twopass", "quarter_res"); resumo.Add("Placa: NVIDIA (NVENC, latência mínima)"); }
+            else if (gpus.Contains("Radeon") || gpus.Contains("AMD")) { A("encoder", "amdvce"); A("amd_usage", "ultralowlatency"); A("amd_rc", "cbr"); A("amd_quality", "balanced"); A("amd_vbaq", "enabled"); resumo.Add("Placa: AMD (AMF, ultra baixa latência)"); }
             else { A("encoder", "quicksync"); A("qsv_preset", "veryfast"); resumo.Add("Placa: Intel (QuickSync)"); }
             A("sunshine_name", "TELAR " + Environment.MachineName);
             A("system_tray", "disabled");
@@ -820,7 +820,7 @@ static class EscolherPapel
 class TelaForte : Casca
 {
     readonly Config cfg;
-    readonly System.Windows.Forms.Timer vigia = new System.Windows.Forms.Timer { Interval = 2000 };
+    readonly System.Windows.Forms.Timer vigia = new System.Windows.Forms.Timer { Interval = 1000 };
     string codigo = "";
     bool motorOk, vigiando, reparando;
     List<string[]> aparelhos = new List<string[]>();

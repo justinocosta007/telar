@@ -234,25 +234,34 @@ class TelaTV : Casca
     // conexão automática na rede de casa: os dois lados calculam o mesmo código, o PC Forte confirma sozinho
     static bool ConectarNaRede(string ip)
     {
-        var info = Util.InfoMotor(ip, 4000);
+        string[] info = null;
+        for (int i = 0; i < 3 && (info == null || info[1] == ""); i++) { info = Util.InfoMotor(ip, 4000); if (info == null) Thread.Sleep(1000); }
         if (info == null || info[1] == "") return false;
-        Process p = null;
-        try
+        string pin = Util.CodigoDaRede(info[1]);
+        // até 3 tentativas: às vezes o primeiro pedido não chega a tempo no PC Forte (Wi-Fi acordando etc.)
+        for (int tentativa = 0; tentativa < 3; tentativa++)
         {
-            p = Receptor.Abrir("pair \"" + ip + "\" --pin " + Util.CodigoDaRede(info[1]), true);
-            var fim = DateTime.Now.AddSeconds(30);
-            Thread.Sleep(2500);
-            while (DateTime.Now < fim)
+            Process p = null;
+            try
             {
-                string lixo;
-                if (Listar(ip, out lixo) == 0) return true;
-                if (p.HasExited) { Thread.Sleep(1000); return Listar(ip, out lixo) == 0; }
-                Thread.Sleep(2000);
+                p = Receptor.Abrir("pair \"" + ip + "\" --pin " + pin, true);
+                var fim = DateTime.Now.AddSeconds(16);
+                Thread.Sleep(3000);
+                while (DateTime.Now < fim)
+                {
+                    string lixo;
+                    if (Listar(ip, out lixo) == 0) return true;
+                    if (p.HasExited) break;
+                    Thread.Sleep(2000);
+                }
             }
-            return false;
+            catch { }
+            finally { try { if (p != null && !p.HasExited) p.Kill(); } catch { } }
+            Thread.Sleep(1500);
+            string ultimo;
+            if (Listar(ip, out ultimo) == 0) return true;
         }
-        catch { return false; }
-        finally { try { if (p != null && !p.HasExited) p.Kill(); } catch { } }
+        return false;
     }
 
     static int Listar(string ip, out string saida)
@@ -377,14 +386,14 @@ class TelaTV : Casca
         Func<string, string, string> G = (k, d) => { string v = cfg.Get("tv." + k); return v == "" ? d : v; };
         var p = new PlanoTx { Fora = ip.StartsWith("100.") && G("foraAuto", "1") == "1" };
         string res = G("res", "auto"), fps = G("fps", "auto");
-        // no Wi-Fi o automático vai de 1080p 120 (fluido como o Steam Link, sem estourar o Wi-Fi);
-        // num PC da TV bem simples vai de 1080p 60, senão ele não dá conta de decodificar e trava tudo
-        bool leve = !p.Fora && (wifi || PcFraco);
+        // em casa o automático manda sempre pelo menos Quad HD 1440p (a resolução nativa do PC Forte: sem reduzir
+        // a imagem lá e ampliar de novo aqui, que é o que deixava borrado). No Wi-Fi a taxa fica um pouco menor;
+        // num PC da TV bem simples vai a 60 FPS, senão ele não dá conta de decodificar e trava tudo
         bool so60 = !p.Fora && PcFraco;
         // fora de casa é acesso remoto para trabalho: usa a resolução da tela daqui (texto nítido, sem escala)
         int alturaTela = Tela.Atual()[1];
         int foraAltura = alturaTela >= 1440 ? 1440 : alturaTela >= 1080 ? 1080 : 720;
-        p.Altura = res == "auto" ? (p.Fora ? foraAltura : leve ? 1080 : 1440) : int.Parse(res);
+        p.Altura = res == "auto" ? (p.Fora ? foraAltura : 1440) : int.Parse(res);
         p.Largura = p.Altura == 2160 ? 3840 : p.Altura == 1440 ? 2560 : p.Altura == 1080 ? 1920 : 1280;
         p.Fps = fps == "auto" ? (so60 ? 60 : hz >= 119 ? 120 : 60) : int.Parse(fps);
         if (p.Fps > 60 && hz < p.Fps - 1)
@@ -393,10 +402,10 @@ class TelaTV : Casca
             p.Fps = hz >= 119 ? 120 : 60;
         }
         if (p.Fora && p.Fps > 60) { p.Fps = 60; p.Aviso = "modo trabalho: 60 FPS"; }
-        if (leve && (res == "auto" || fps == "auto")) p.Aviso = so60 ? "PC da TV simples: 1080p 60 para não travar" : "Wi-Fi: 1080p para ficar estável (com cabo de rede vai a 1440p)";
+        if (so60 && fps == "auto") p.Aviso = "PC da TV simples: 60 FPS para não travar";
         int auto = BitrateAuto(p.Altura, p.Fps, p.Fora);
-        // Wi-Fi não aguenta taxas altas sem perder pacotes (é isso que trava a imagem)
-        if (wifi && !p.Fora) auto = Math.Min(auto * 2 / 3 / 1000 * 1000, 40000);
+        // Wi-Fi não aguenta a taxa do cabo sem perder pacotes (é isso que trava a imagem): até 50 Mbps
+        if (wifi && !p.Fora) auto = Math.Min(auto, 50000);
         string br = G("bitrate", "auto");
         p.Kbps = br == "auto" ? auto : int.Parse(br);
         return p;
@@ -468,7 +477,7 @@ class TelaTV : Casca
         Rotulo(s1, "Resolução e FPS", 11f, Color.White);
         Rotulo(s1, "Valores muito altos para o seu PC ou rede podem causar atraso, engasgos ou erros. Esta TV está em " + hz + " Hz.", 8.5f, Color.FromArgb(190, 190, 190));
         var linha = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 4) };
-        var cRes = Combo(linha, "res", new[] { "auto|Automático (1440p no cabo, 1080p no Wi-Fi)", "720|720p", "1080|1080p", "1440|1440p", "2160|4K" }, "auto", 190);
+        var cRes = Combo(linha, "res", new[] { "auto|Automático (Quad HD 1440p)", "720|720p", "1080|1080p", "1440|1440p", "2160|4K" }, "auto", 190);
         var cFps = Combo(linha, "fps", new[] { "auto|Automático (120, ou 60)", "30|30 FPS", "60|60 FPS", "90|90 FPS", "120|120 FPS", "144|144 FPS" }, "auto", 210);
         s1.Controls.Add(linha);
         var lBit = Rotulo(s1, "", 10f, Color.White);
@@ -602,7 +611,7 @@ class TelaTV : Casca
             "2. Aqui, o PC Forte aparece sozinho em Computadores. Se não aparecer, clique em + e digite o IP mostrado no PC Forte.\n" +
             "3. Clique no PC Forte. Na mesma rede ele conecta sozinho, sem código.\n" +
             "4. Fora de casa (Tailscale) ele pede o código que aparece no TELAR do PC Forte.\n\n" +
-            "No Wi-Fi o automático usa 1080p a 120 FPS (use Wi-Fi 5 GHz, perto do roteador). Com cabo de rede usa 1440p a 120.\n\n" +
+            "O automático usa Quad HD 1440p a 120 FPS. No Wi-Fi use a rede de 5 GHz, perto do roteador.\n\n" +
             "Durante o jogo: Ctrl+Alt+Shift+Q sai, Ctrl+Alt+Shift+S mostra as estatísticas, Ctrl+Alt+Shift+Z solta o mouse.\n" +
             "Fora de casa (acesso remoto para trabalho): instale o Tailscale nos dois PCs e use o IP 100.x do PC Forte. O TELAR entra sozinho no modo trabalho.",
             "Ajuda do TELAR");

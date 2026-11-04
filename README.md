@@ -30,7 +30,7 @@ Durante a transmissão: `Ctrl+Alt+Shift+Q` sai, `Ctrl+Alt+Shift+S` mostra as est
 | Modo | Uso | Taxa de bits |
 |---|---|---|
 | Automático com cabo de rede | Quad HD 1440p 120 fps; cai para 60 fps se a TV não aceitar 120 Hz | ~75 Mbps |
-| Automático no Wi-Fi | Full HD 1080p 120 fps (estável no Wi-Fi 5 GHz); 60 fps em PC da TV bem simples | ~32 Mbps |
+| Automático no Wi-Fi | Quad HD 1440p 120 fps (use o Wi-Fi 5 GHz); 60 fps em PC da TV bem simples | 50 Mbps |
 | 4K 2160p 60 fps | opção em casa | 80 Mbps |
 | Modo trabalho | fora de casa pelo Tailscale, na resolução da sua tela, 60 fps | 8 a 15 Mbps |
 
